@@ -1,4 +1,5 @@
 import io
+import subprocess
 
 import numpy as np
 import pytest
@@ -45,7 +46,10 @@ def cliente(tmp_path, monkeypatch):
     def descarga_falsa(url, carpeta):
         ruta = carpeta / "youtube.wav"
         wavfile.write(ruta, SR, (cancion(150, 15, 0.4) * 32000).astype(np.int16))
-        return ruta, {"titulo": "Tema", "artista": "Banda"}
+        miniatura = carpeta / "youtube.webp"
+        subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=red:s=1280x720",
+                        "-frames:v", "1", str(miniatura)], check=True)
+        return ruta, {"titulo": "Tema", "artista": "Banda", "miniatura": miniatura}
 
     monkeypatch.setattr(aplicacion, "descargar_audio", descarga_falsa)
     aplicacion.app.config["TESTING"] = True
@@ -61,6 +65,8 @@ def test_generar_desde_youtube(cliente):
     assert datos["analisis"]["bpm"] == pytest.approx(150, abs=0.05)
     osu = cliente.get(f"/api/trabajos/{datos['id']}/osu/0").data.decode()
     assert "Title:Tema" in osu and "Artist:Banda" in osu
+    assert datos["fondo"] and cliente.get(datos["fondo"]).status_code == 200
+    assert '0,0,"fondo.jpg",0,0' in osu
     audio = cliente.get(datos["audio"])
     assert audio.status_code == 200 and len(audio.data) > 1000
 

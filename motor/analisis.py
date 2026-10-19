@@ -16,6 +16,8 @@ from dataclasses import dataclass, field
 import numpy as np
 from scipy.ndimage import maximum_filter1d, median_filter, uniform_filter1d
 
+from . import capas as modulo_capas
+
 HOP = 256
 N_FFT_ONSET = 1024
 N_FFT_MELODIA = 2048
@@ -68,6 +70,7 @@ class Analisis:
     confianza_melodia: np.ndarray
     energia_tonal_db: np.ndarray
     secciones: list = field(default_factory=list)
+    capas: dict = field(default_factory=dict)  # nombre -> capas.Capa
 
     # ---- rejilla rítmica -------------------------------------------------
     @property
@@ -113,7 +116,9 @@ class Analisis:
             return 0.0
         referencia = float(self.energia_tonal_db[i:i + 4].max())
         tramo = self.energia_tonal_db[i + 4:fin]
-        golpes = self.env_medio[i + 4:fin]  # la percusión no corta una nota sostenida
+        # Solo un ataque armónico nuevo corta la nota: la percusión no.
+        ataques = self.capas["melodia"].env if "melodia" in self.capas else self.env_medio
+        golpes = ataques[i + 4:fin]
         corte = (tramo < referencia - 7.0) | (golpes > 0.5)
         if corte.any():
             j = int(np.argmax(corte)) + 4
@@ -138,6 +143,9 @@ class Analisis:
             "secciones": [s.como_dict() for s in self.secciones],
             "intensidad": reducir(self.intensidad),
             "onset_env": reducir(self.env),
+            "capas": {nombre: {"familia": c.familia, "onsets": int((c.fuerzas >= 0.2).sum()),
+                               "actividad": reducir(c.actividad)}
+                      for nombre, c in self.capas.items()},
         }
 
 
@@ -193,7 +201,9 @@ def _espectros(senal: np.ndarray, sr: int):
     frecuencias_mel = np.fft.rfftfreq(N_FFT_MELODIA, 1.0 / sr)
     banda_tonal = (frecuencias_mel >= 80) & (frecuencias_mel <= 4000)
 
+    banco_fino, centros_fino = banco_mel(sr, N_FFT_ONSET, modulo_capas.N_MEL_FINO)
     mel = np.zeros((n_frames, N_MEL), dtype=np.float32)
+    mel_fino = np.zeros((n_frames, modulo_capas.N_MEL_FINO), dtype=np.float32)
     energia = np.zeros(n_frames, dtype=np.float32)
     energia_tonal = np.zeros(n_frames, dtype=np.float32)
     saliencia = np.zeros((n_frames, midis.size), dtype=np.float32)
@@ -207,6 +217,7 @@ def _espectros(senal: np.ndarray, sr: int):
         cuadros = acolchada[idx_on] * ventana_on
         potencia = np.abs(np.fft.rfft(cuadros, axis=1)) ** 2
         mel[inicio:fin] = potencia @ banco.T
+        mel_fino[inicio:fin] = potencia @ banco_fino.T
         energia[inicio:fin] = potencia.sum(axis=1)
 
         idx_mel = posiciones[:, None] + np.arange(N_FFT_MELODIA)[None, :]
@@ -218,7 +229,7 @@ def _espectros(senal: np.ndarray, sr: int):
 
     mel_db = 10.0 * np.log10(mel + 1e-10)
     mel_db = np.maximum(mel_db, mel_db.max() - 80.0)
-    return mel_db, energia, energia_tonal, saliencia, midis, centros
+    return mel_db, energia, energia_tonal, saliencia, midis, centros, mel_fino, centros_fino
 
 
 def _normalizar(curva: np.ndarray, percentil: float = 99.5) -> np.ndarray:
@@ -463,7 +474,10 @@ def analizar(senal: np.ndarray, sr: int, bpm: float | None = None,
     """Analiza la canción completa. `bpm`/`offset` (s) permiten forzar la rejilla."""
     hop_s = HOP / sr
     duracion = senal.size / sr
-    mel_db, energia, energia_tonal, saliencia, midis, centros = _espectros(senal, sr)
+    (mel_db, energia, energia_tonal, saliencia, midis, centros,
+     mel_fino, centros_fino) = _espectros(senal, sr)
+    capas = modulo_capas.separar(mel_fino, centros_fino, hop_s, detectar_onsets)
+    del mel_fino
 
     flujo = _flujo(mel_db)
     graves = centros < 200
@@ -509,4 +523,5 @@ def analizar(senal: np.ndarray, sr: int, bpm: float | None = None,
         intensidad=intensidad, altura=altura, confianza_melodia=confianza,
         energia_tonal_db=energia_tonal_db.astype(np.float32),
         secciones=secciones,
+        capas=capas,
     )

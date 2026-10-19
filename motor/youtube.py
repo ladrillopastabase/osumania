@@ -27,7 +27,7 @@ def _separar_artista(titulo: str) -> tuple[str | None, str]:
 
 
 def descargar_audio(url: str, carpeta) -> tuple[Path, dict]:
-    """Descarga el audio como MP3 en `carpeta`. Devuelve (ruta, {titulo, artista})."""
+    """Descarga el audio como MP3 en `carpeta`. Devuelve (ruta, {titulo, artista, miniatura})."""
     if not es_url_youtube(url):
         raise ErrorAudio("El enlace no es de YouTube.")
     if not hay_ffmpeg():
@@ -55,6 +55,7 @@ def descargar_audio(url: str, carpeta) -> tuple[Path, dict]:
         "quiet": True,
         "no_warnings": True,
         "match_filter": filtro,
+        "writethumbnail": True,
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3",
                             "preferredquality": "2"}],
     }
@@ -72,8 +73,10 @@ def descargar_audio(url: str, carpeta) -> tuple[Path, dict]:
 
     titulo_video = (info or {}).get("title") or "YouTube"
     artista_titulo, tema = _separar_artista(titulo_video)
+    miniaturas = [m for m in carpeta.glob("youtube.*") if m.suffix.lower() in (".jpg", ".jpeg", ".png", ".webp")]
     meta = {
         "titulo": info.get("track") or tema,
         "artista": info.get("artist") or artista_titulo or info.get("uploader") or "Desconocido",
+        "miniatura": miniaturas[0] if miniaturas else None,
     }
     return ruta, meta

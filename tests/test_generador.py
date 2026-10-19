@@ -15,9 +15,10 @@ def analisis():
 
 @pytest.mark.parametrize("teclas", [4, 7])
 @pytest.mark.parametrize("dificultad", NOMBRES)
-@pytest.mark.parametrize("estilo", ["hibrido", "ritmo", "melodia"])
-def test_mapas_validos(analisis, teclas, dificultad, estilo):
-    mapa = generar_mapa(analisis, OpcionesGeneracion(teclas, dificultad, estilo))
+@pytest.mark.parametrize("mezcla", [(0.5, 0.5), (1.0, 0.0), (0.0, 1.0)])
+def test_mapas_validos(analisis, teclas, dificultad, mezcla):
+    percusion, melodia = mezcla
+    mapa = generar_mapa(analisis, OpcionesGeneracion(teclas, dificultad, percusion, melodia))
     informe = validar(mapa, analisis.duracion)
     assert informe["valido"], informe["errores"]
     assert informe["estadisticas"]["notas"] > 40
@@ -69,7 +70,7 @@ def test_opciones_invalidas():
     with pytest.raises(ValueError):
         OpcionesGeneracion(teclas=5)
     with pytest.raises(ValueError):
-        OpcionesGeneracion(estilo="otro")
+        OpcionesGeneracion(percusion=0, melodia=0)
 
 
 # --- calidad rítmica sobre una canción con ritmo conocido ---------------------
@@ -115,3 +116,35 @@ def test_ritmo_repetido_mismo_patron(realista):
     coro = [ritmo(i) for i in range(13, 19)]
     iguales = sum(a == b for a, b in zip(coro, coro[1:]))
     assert iguales >= 4
+
+
+def test_controles_percusion_y_melodia(realista):
+    from sintetico import cancion_realista
+    analisis, _ = realista
+    eventos = cancion_realista()[1]
+    melodia = np.array([e[0] for e in eventos if e[1] == "melodia"])
+    solo_bateria = np.array([e[0] for e in eventos
+                             if e[1] != "melodia" and np.min(np.abs(melodia - e[0])) > 0.03])
+
+    def medir(percusion, melodia_peso):
+        mapa = generar_mapa(analisis, OpcionesGeneracion(4, "Hard", percusion, melodia_peso))
+        tiempos = sorted({n.tiempo for n in mapa.notas})
+        en_bateria = np.mean([np.min(np.abs(solo_bateria - t)) < 0.025 for t in tiempos])
+        acordes = len(mapa.notas) - len(tiempos)
+        return en_bateria, acordes
+
+    bateria_p, acordes_p = medir(1.0, 0.0)
+    bateria_m, acordes_m = medir(0.0, 1.0)
+    assert bateria_p > 2 * bateria_m
+    assert acordes_m == 0 and acordes_p > 20
+
+
+def test_capas_detectadas(realista):
+    analisis, _ = realista
+    assert set(analisis.capas) == {"bombo", "caja", "platillos", "bajo", "melodia"}
+    from sintetico import cancion_realista
+    bombos = np.array([e[0] for e in cancion_realista()[1] if e[1] == "bombo"])
+    capa = analisis.capas["bombo"]
+    fuertes = capa.onsets[capa.fuerzas > 0.25]
+    assert np.mean([np.min(np.abs(fuertes - t)) < 0.03 for t in bombos]) > 0.95
+    assert np.mean([np.min(np.abs(bombos - t)) < 0.03 for t in fuertes]) > 0.9

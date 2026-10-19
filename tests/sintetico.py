@@ -150,7 +150,7 @@ def cancion_realista(bpm=170.0, offset=0.6, sr=SR, humano=0.0, semilla=5):
     if humano:
         from scipy.signal import fftconvolve
         t = np.arange(int(0.8 * sr)) / sr
-        respuesta = rng.standard_normal(t.size) * np.exp(-t * 6) * 0.03
+        respuesta = rng.standard_normal(t.size) * np.exp(-t * 6) * 0.004
         respuesta[0] = 1.0
         senal = fftconvolve(senal, respuesta)[:n]
         senal += rng.standard_normal(n) * 0.01 * np.abs(senal).max()

@@ -20,6 +20,7 @@ const estado = {
   resultado: null,
   mapa: null,
   animacion: null,
+  fondo: null,
 };
 
 // ---------------------------------------------------------------- formulario
@@ -75,6 +76,25 @@ for (const nombre of ["densidad", "holds"]) {
   control.addEventListener("input", () => { salida.textContent = `${Number(control.value).toFixed(1)}×`; });
 }
 
+// Percusión y melodía: deslizadores en % y preajustes.
+function actualizarMezcla() {
+  for (const nombre of ["percusion", "melodia"]) {
+    $(`v-${nombre}`).textContent = `${formulario.elements[nombre].value}%`;
+  }
+  const actual = `${formulario.elements.percusion.value},${formulario.elements.melodia.value}`;
+  document.querySelectorAll("[data-mezcla]").forEach((b) => b.classList.toggle("activa", b.dataset.mezcla === actual));
+}
+for (const nombre of ["percusion", "melodia"]) {
+  formulario.elements[nombre].addEventListener("input", actualizarMezcla);
+}
+document.querySelectorAll("[data-mezcla]").forEach((boton) => boton.addEventListener("click", () => {
+  const [p, m] = boton.dataset.mezcla.split(",");
+  formulario.elements.percusion.value = p;
+  formulario.elements.melodia.value = m;
+  actualizarMezcla();
+}));
+actualizarMezcla();
+
 function valoresMarcados(nombre) {
   return [...formulario.querySelectorAll(`input[name="${nombre}"]:checked`)].map((c) => c.value).join(",");
 }
@@ -84,6 +104,10 @@ formulario.addEventListener("submit", async (e) => {
   const url = $("url").value.trim();
   if (!estado.archivo && !url) {
     mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
+    return;
+  }
+  if (Number(formulario.elements.percusion.value) + Number(formulario.elements.melodia.value) === 0) {
+    mostrarEstado("La percusión y la melodía no pueden estar ambas en 0%.", true);
     return;
   }
   const teclas = valoresMarcados("teclas");
@@ -97,9 +121,13 @@ formulario.addEventListener("submit", async (e) => {
   else datos.append("url", url);
   datos.append("teclas", teclas);
   datos.append("dificultades", dificultades);
-  for (const campo of ["titulo", "artista", "creador", "estilo", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
+  for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
     datos.append(campo, formulario.elements[campo].value);
   }
+  datos.append("percusion", Number(formulario.elements.percusion.value) / 100);
+  datos.append("melodia", Number(formulario.elements.melodia.value) / 100);
+  const imagen = $("imagen").files[0];
+  if (imagen) datos.append("imagen", imagen);
 
   const boton = $("boton-generar");
   boton.disabled = true;
@@ -148,6 +176,19 @@ function mostrarResultados(json) {
   $("leyenda-secciones").innerHTML = Object.entries(COLORES_SECCION)
     .map(([k, c]) => `<span><i style="background:${c}"></i>${k}</span>`).join("")
     + `<span><i style="background:#ffffff"></i>intensidad</span>`;
+
+  dibujarCapas(a);
+  const miniatura = $("miniatura");
+  estado.fondo = null;
+  if (json.fondo) {
+    miniatura.src = `${json.fondo}?t=${json.id}`;
+    miniatura.hidden = false;
+    const imagenFondo = new Image();
+    imagenFondo.onload = () => { estado.fondo = imagenFondo; dibujarCampo(); };
+    imagenFondo.src = miniatura.src;
+  } else {
+    miniatura.hidden = true;
+  }
 
   $("descargar-osz").href = json.osz;
 
@@ -205,6 +246,34 @@ function ajustarCanvas(canvas) {
   const ctx = canvas.getContext("2d");
   ctx.setTransform(escala, 0, 0, escala, 0, 0);
   return [ctx, ancho, alto];
+}
+
+const NOMBRES_CAPA = {
+  bombo: "Bombo", caja: "Caja", platillos: "Platillos", bajo: "Bajo", melodia: "Melodía / voz",
+};
+
+function dibujarCapas(a) {
+  const [ctx, ancho, alto] = ajustarCanvas($("capas"));
+  ctx.clearRect(0, 0, ancho, alto);
+  const orden = ["bombo", "caja", "platillos", "bajo", "melodia"];
+  const capas = orden.filter((n) => a.capas && a.capas[n]).map((n) => [n, a.capas[n]]);
+  if (!capas.length) return;
+  const etiqueta = Math.min(110, ancho * 0.3);
+  const fila = alto / capas.length;
+  ctx.font = "12px system-ui, sans-serif";
+  ctx.textBaseline = "middle";
+  capas.forEach(([nombre, capa], i) => {
+    const y = i * fila;
+    const color = capa.familia === "percusion" ? [255, 102, 170] : [102, 204, 255];
+    ctx.fillStyle = "#a39fb8";
+    ctx.fillText(`${NOMBRES_CAPA[nombre] || nombre} (${capa.onsets})`, 4, y + fila / 2);
+    const valores = capa.actividad;
+    const paso = (ancho - etiqueta) / valores.length;
+    valores.forEach((v, j) => {
+      ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${(0.08 + 0.92 * v).toFixed(3)})`;
+      ctx.fillRect(etiqueta + j * paso, y + 2, Math.ceil(paso), fila - 4);
+    });
+  });
 }
 
 function dibujarLineaTiempo(a) {
@@ -285,8 +354,18 @@ function dibujarCampo() {
 
   ctx.fillStyle = "#0e0d14";
   ctx.fillRect(0, 0, ancho, alto);
+  if (estado.fondo) {
+    // Fondo del beatmap, recortado para cubrir el campo y oscurecido como en osu!.
+    const img = estado.fondo;
+    const escala = Math.max(ancho / img.width, alto / img.height);
+    const w = img.width * escala;
+    const h = img.height * escala;
+    ctx.drawImage(img, (ancho - w) / 2, (alto - h) / 2, w, h);
+    ctx.fillStyle = "rgba(14, 13, 20, 0.72)";
+    ctx.fillRect(0, 0, ancho, alto);
+  }
   for (let c = 0; c < k; c++) {
-    ctx.fillStyle = c % 2 ? "#15131d" : "#191723";
+    ctx.fillStyle = c % 2 ? "rgba(21, 19, 29, 0.85)" : "rgba(25, 23, 35, 0.85)";
     ctx.fillRect(izquierda + c * anchoColumna, 0, anchoColumna, alto);
   }
 
@@ -375,6 +454,7 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("resize", () => {
   if (!estado.resultado) return;
   dibujarLineaTiempo(estado.resultado.analisis);
+  dibujarCapas(estado.resultado.analisis);
   dibujarDensidad();
   dibujarCampo();
 });

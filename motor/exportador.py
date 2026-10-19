@@ -65,7 +65,8 @@ def _tiempo_vista_previa(analisis: Analisis) -> int:
     return _ms(analisis.duracion * 0.4)
 
 
-def exportar_osu(mapa: Mapa, analisis: Analisis, meta: Metadatos, audio: str = "audio.mp3") -> str:
+def exportar_osu(mapa: Mapa, analisis: Analisis, meta: Metadatos, audio: str = "audio.mp3",
+                 fondo: str | None = None) -> str:
     p = mapa.perfil
     lineas = [
         "osu file format v14",
@@ -110,6 +111,7 @@ def exportar_osu(mapa: Mapa, analisis: Analisis, meta: Metadatos, audio: str = "
         "",
         "[Events]",
         "//Background and Video events",
+        *([f'0,0,"{fondo}",0,0'] if fondo else []),
         "//Break Periods",
         "//Storyboard Layer 0 (Background)",
         "//Storyboard Layer 1 (Fail)",
@@ -151,12 +153,14 @@ def leer_hitobjects(contenido: str, teclas: int) -> list[tuple[int, int, int | N
     return resultado
 
 
-def empaquetar_osz(destino, audio, archivos_osu: dict[str, str]) -> Path:
-    """Crea un .osz (zip) con el audio y los .osu; osu! lo importa al abrirlo."""
+def empaquetar_osz(destino, audio, archivos_osu: dict[str, str], fondo=None) -> Path:
+    """Crea un .osz (zip) con el audio, el fondo y los .osu; osu! lo importa al abrirlo."""
     destino = Path(destino)
     audio = Path(audio)
     with zipfile.ZipFile(destino, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.write(audio, audio.name)
+        if fondo is not None:
+            zf.write(fondo, Path(fondo).name)
         for nombre, contenido in archivos_osu.items():
             zf.writestr(nombre, contenido.encode("utf-8"))
     return destino

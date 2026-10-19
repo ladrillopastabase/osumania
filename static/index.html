@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Generador osu!mania</title>
-  <link rel="stylesheet" href="/static/estilos.css?v=2">
+  <link rel="stylesheet" href="/static/estilos.css?v=3">
 </head>
 <body>
   <header class="cabecera">
@@ -44,14 +44,26 @@
         <label class="ficha"><input type="checkbox" name="dificultades" value="Insane" checked> Insane</label>
       </fieldset>
 
+      <fieldset class="mezcla">
+        <legend>¿Qué siguen las notas?</legend>
+        <div class="preajustes">
+          <button type="button" class="ficha" data-mezcla="50,50">Equilibrado</button>
+          <button type="button" class="ficha" data-mezcla="90,20">Batería</button>
+          <button type="button" class="ficha" data-mezcla="20,90">Melodía</button>
+          <button type="button" class="ficha" data-mezcla="70,70">Todo</button>
+        </div>
+        <div class="rejilla">
+          <label>Percusión (bombo, caja, platillos) <output id="v-percusion">50%</output>
+            <input type="range" name="percusion" min="0" max="100" step="5" value="50">
+          </label>
+          <label>Melodía (voz, instrumentos, bajo) <output id="v-melodia">50%</output>
+            <input type="range" name="melodia" min="0" max="100" step="5" value="50">
+          </label>
+        </div>
+        <p class="ayuda">La canción se separa en capas por instrumento. Más percusión: patrones rítmicos y acordes en bombo y caja. Más melodía: las notas dibujan el contorno de la melodía.</p>
+      </fieldset>
+
       <div class="rejilla">
-        <label>Estilo de patrones
-          <select name="estilo">
-            <option value="hibrido" selected>Híbrido (ritmo + melodía)</option>
-            <option value="ritmo">Rítmico (percusión)</option>
-            <option value="melodia">Melódico (sigue la melodía)</option>
-          </select>
-        </label>
         <label>Densidad <output id="v-densidad">1.0×</output>
           <input type="range" name="densidad" min="0.5" max="1.8" step="0.1" value="1.0">
         </label>
@@ -59,6 +71,11 @@
           <input type="range" name="holds" min="0" max="2.5" step="0.1" value="1.0">
         </label>
       </div>
+
+      <label class="ficha-imagen">Imagen de fondo (opcional)
+        <input id="imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,.webp,image/*">
+        <small>Si no subes una, se usa la miniatura del video de YouTube o la portada del audio.</small>
+      </label>
 
       <details>
         <summary>Ajustes avanzados</summary>
@@ -76,10 +93,17 @@
 
     <section id="resultados" hidden>
       <div class="tarjeta">
-        <h2>Análisis musical</h2>
-        <dl id="datos-analisis" class="datos"></dl>
+        <div class="cabecera-analisis">
+          <img id="miniatura" alt="Fondo del beatmap" hidden>
+          <div>
+            <h2>Análisis musical</h2>
+            <dl id="datos-analisis" class="datos"></dl>
+          </div>
+        </div>
         <canvas id="linea-tiempo" height="90"></canvas>
         <div id="leyenda-secciones" class="leyenda"></div>
+        <h3 class="subtitulo">Capas por instrumento</h3>
+        <canvas id="capas" height="130"></canvas>
       </div>
 
       <div class="tarjeta">
@@ -113,6 +137,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=4"></script>
+  <script src="/static/app.js?v=5"></script>
 </body>
 </html>

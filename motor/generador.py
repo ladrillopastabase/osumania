@@ -32,16 +32,12 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .analisis import Analisis
+from .capas import MELODIA, PERCUSION
 from .dificultades import PerfilDificultad, perfil as obtener_perfil
 
-ESTILOS = ("hibrido", "ritmo", "melodia")
-
-# Pesos de saliencia (graves, medios, agudos, cambio melódico) según el estilo.
-_PESOS_SALIENCIA = {
-    "hibrido": (1.0, 0.9, 0.45, 0.8),
-    "ritmo": (1.1, 0.95, 0.6, 0.3),
-    "melodia": (0.6, 0.8, 0.25, 1.3),
-}
+# Importancia de cada capa dentro de su familia.
+_PESO_CAPA = {"bombo": 1.0, "caja": 0.9, "platillos": 0.5, "melodia": 1.0, "bajo": 0.6}
+_PESO_CAMBIO_MELODICO = 0.6
 _BONO_NIVEL = {0: 0.15, 1: 0.1, 2: 0.05, 3: 0.0}
 _FACTOR_SECCION = {"tranquila": 0.6, "media": 0.9, "intensa": 1.1, "clímax": 1.25}
 _UNIDADES_PULSO = 12  # 1/4 = 3 unidades, 1/3 = 4 unidades
@@ -62,7 +58,8 @@ class Nota:
 class OpcionesGeneracion:
     teclas: int = 4
     dificultad: str = "Normal"
-    estilo: str = "hibrido"
+    percusion: float = 0.5   # 0..1: cuánto siguen las notas a la batería
+    melodia: float = 0.5     # 0..1: cuánto siguen las notas a la melodía y el bajo
     densidad: float = 1.0
     holds: float = 1.0
     semilla: int = 0
@@ -70,8 +67,10 @@ class OpcionesGeneracion:
     def __post_init__(self):
         if self.teclas not in (4, 7):
             raise ValueError("Solo se admiten 4K y 7K.")
-        if self.estilo not in ESTILOS:
-            raise ValueError(f"Estilo desconocido: {self.estilo}")
+        self.percusion = float(np.clip(self.percusion, 0.0, 1.0))
+        self.melodia = float(np.clip(self.melodia, 0.0, 1.0))
+        if self.percusion + self.melodia < 0.05:
+            raise ValueError("La percusión y la melodía no pueden estar ambas en cero.")
         self.densidad = float(np.clip(self.densidad, 0.3, 2.5))
         self.holds = float(np.clip(self.holds, 0.0, 3.0))
 
@@ -92,13 +91,15 @@ class _Evento:
     compas: int       # índice de compás relativo al offset
     posicion: int     # posición dentro del compás en unidades de 1/12 de pulso
     nivel: int        # 0 tiempo fuerte, 1 pulso, 2 medio pulso, 3 subdivisión menor
-    bajo: float = 0.0
-    medio: float = 0.0
-    alto: float = 0.0
-    melodia: float = 0.0
+    capas: dict = field(default_factory=dict)  # fuerza del ataque en cada capa
+    cambio: float = 0.0   # cambio de altura melódica
     altura: float = 60.0
     confianza: float = 0.0
     saliencia: float = 0.0
+    melodico: float = 0.0  # 0 = solo percusión, 1 = solo melodía
+
+    def fuerza(self, capa: str) -> float:
+        return self.capas.get(capa, 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -122,23 +123,36 @@ def _cambio_melodico(analisis: Analisis, t: float) -> float:
     confianza = analisis.maximo(analisis.confianza_melodia, t + 0.02, 0.02)
     if confianza < 0.25:
         return 0.0
-    antes = analisis.valor(analisis.altura, t - 0.05)
-    despues = analisis.valor(analisis.altura, t + 0.04)
+    # La ventana de altura dura ~90 ms: se compara justo antes del ataque con
+    # un punto donde la ventana ya cubre casi solo la nota nueva.
+    antes = analisis.valor(analisis.altura, t - 0.045)
+    despues = analisis.valor(analisis.altura, t + 0.05)
     salto = abs(despues - antes)
     if salto < 0.5:
         return 0.0
     return confianza * min(1.0, salto / 3.0)
 
 
-def construir_eventos(analisis: Analisis, perfil: PerfilDificultad, estilo: str) -> list:
-    """Ajusta cada onset al punto permitido más cercano de la rejilla."""
+def _ataques(analisis: Analisis):
+    """(tiempo, capa, fuerza) de todas las capas; sin capas, cae a los onsets globales."""
+    if analisis.capas:
+        for capa in analisis.capas.values():
+            for t, f in zip(capa.onsets, capa.fuerzas):
+                yield float(t), capa.nombre, float(f)
+    else:
+        for t, f in zip(analisis.onsets, analisis.fuerzas):
+            yield float(t), "caja", float(f)
+
+
+def construir_eventos(analisis: Analisis, perfil: PerfilDificultad,
+                      opciones: "OpcionesGeneracion") -> list:
+    """Ajusta el ataque de cada capa al punto permitido más cercano de la rejilla."""
     periodo = analisis.periodo
     tolerancia = 0.03
     tresillos_por_pulso: dict[int, bool] = {}
     eventos: dict[tuple[int, int], _Evento] = {}
-    pesos = _PESOS_SALIENCIA[estilo]
 
-    for t, _fuerza in zip(analisis.onsets, analisis.fuerzas):
+    for t, capa, fuerza in _ataques(analisis):
         relativo = (t - analisis.offset) / periodo
         pulso = int(np.floor(relativo + 0.5 / _UNIDADES_PULSO))
         fraccion = relativo - pulso
@@ -170,18 +184,50 @@ def construir_eventos(analisis: Analisis, perfil: PerfilDificultad, estilo: str)
         evento = eventos.get(clave)
         if evento is None:
             evento = eventos[clave] = _Evento(float(tiempo), compas, posicion, nivel)
-        evento.bajo = max(evento.bajo, analisis.maximo(analisis.env_bajo, t, 0.02))
-        evento.medio = max(evento.medio, analisis.maximo(analisis.env_medio, t, 0.02))
-        evento.alto = max(evento.alto, analisis.maximo(analisis.env_alto, t, 0.02))
-        evento.melodia = max(evento.melodia, _cambio_melodico(analisis, t))
+        evento.cambio = max(evento.cambio, _cambio_melodico(analisis, t))
+        evento.capas[capa] = max(evento.capas.get(capa, 0.0), fuerza)
 
-    for e in eventos.values():
+    ordenados = sorted(eventos.values(), key=lambda e: e.tiempo)
+    _atenuar_colas(ordenados)
+
+    # La percusión y la melodía se combinan con los pesos elegidos por el usuario.
+    peso_p, peso_m = 2 * opciones.percusion, 2 * opciones.melodia
+    for e in ordenados:
         e.altura = analisis.valor(analisis.altura, e.tiempo + 0.03)
         e.confianza = analisis.maximo(analisis.confianza_melodia, e.tiempo + 0.02, 0.02)
-        musical = (pesos[0] * e.bajo + pesos[1] * e.medio + pesos[2] * e.alto
-                   + pesos[3] * e.melodia) / (pesos[0] + pesos[1])
+        percusion = max((_PESO_CAPA[c] * e.fuerza(c) for c in PERCUSION), default=0.0)
+        percusion += 0.25 * sum(_PESO_CAPA[c] * e.fuerza(c) for c in PERCUSION) - 0.25 * percusion
+        fuerzas_m = {c: e.fuerza(c) for c in MELODIA}
+        # Un bombo grave y largo (808) también se ve como "bajo" armónico: si hay
+        # bombo al mismo tiempo, ese ataque se atribuye a la percusión.
+        if "bajo" in fuerzas_m and e.fuerza("bombo") >= 0.5 * fuerzas_m["bajo"]:
+            fuerzas_m["bajo"] *= 0.3
+        melodia = max([_PESO_CAPA[c] * f for c, f in fuerzas_m.items()] + [_PESO_CAMBIO_MELODICO * e.cambio])
+        aporte_p, aporte_m = peso_p * percusion, peso_m * melodia
+        musical = aporte_p + aporte_m
+        e.melodico = aporte_m / musical if musical > 0 else 0.0
         e.saliencia = musical + _BONO_NIVEL[e.nivel] * perfil.peso_metrico * min(1.0, musical * 4)
-    return sorted(eventos.values(), key=lambda e: e.tiempo)
+    return ordenados
+
+
+def _atenuar_colas(eventos: list, ventana: float = 0.15) -> None:
+    """La cola tonal de un golpe (bombo 808, cuerpo de la caja) pasa a la parte
+    armónica con retraso y parece un ataque melódico. Si un ataque armónico sin
+    cambio de altura llega poco después de un golpe percusivo más fuerte, se atenúa.
+    """
+    for i, e in enumerate(eventos):
+        melodica = max((e.fuerza(c) for c in MELODIA), default=0.0)
+        if melodica <= 0 or e.cambio >= 0.1:
+            continue
+        j = i - 1
+        while j >= 0 and e.tiempo - eventos[j].tiempo <= ventana:
+            golpe = max((eventos[j].fuerza(c) for c in PERCUSION), default=0.0)
+            if golpe >= 1.5 * melodica:
+                for c in MELODIA:
+                    if c in e.capas:
+                        e.capas[c] *= 0.3
+                break
+            j -= 1
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +292,8 @@ def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificul
         vecinos = [elegido_en(e.compas + d, e.posicion) for d in (-2, -1, 1, 2)]
         if i not in elegidos:
             repetido = (vecinos[1] and vecinos[2]) or (vecinos[0] and vecinos[3])
-            if (repetido and e.saliencia >= max(piso, 0.5 * umbral)
+            # La repetición en los compases vecinos es evidencia suficiente: el piso se relaja.
+            if (repetido and e.saliencia >= max(0.5 * piso, 0.5 * umbral)
                     and _hay_espacio(tiempos, e.tiempo, perfil.separacion_min)):
                 elegidos.add(i)
                 insort(tiempos, e.tiempo)
@@ -443,7 +490,9 @@ class _Asignador:
         confianza = float(np.mean([e.confianza for e in frase]))
         alturas = np.round([e.altura for e in frase])
         movimiento = float(np.mean(np.diff(alturas) != 0)) if n > 1 else 0.0
-        agudos = float(np.mean([e.alto > max(e.bajo, e.medio) for e in frase]))
+        agudos = float(np.mean([e.fuerza("platillos") > max(e.fuerza("bombo"), e.fuerza("caja"))
+                                for e in frase]))
+        melodica = float(np.mean([e.melodico for e in frase]))
         avanzado = p.nombre in ("Hard", "Insane")
         rapido = pulsos <= 1 / 3 + 0.02
         medio = not rapido and pulsos <= 0.5 + 0.02
@@ -470,14 +519,17 @@ class _Asignador:
         else:
             pesos = {"melodia": 3.0 * (0.3 + confianza), "manos": 2.0, "celda": 1.0}
 
-        if self.o.estilo == "melodia" and "melodia" in pesos:
-            pesos["melodia"] *= 2.5
-        elif self.o.estilo == "ritmo":
-            for tipo in ("celda", "trino", "jumptrill", "chordjack", "brackets"):
-                if tipo in pesos:
-                    pesos[tipo] *= 1.5
-            if "melodia" in pesos:
-                pesos["melodia"] *= 0.4
+        # Una frase llevada por la melodía dibuja su contorno; una llevada por la
+        # batería usa patrones rítmicos.
+        if "melodia" in pesos:
+            pesos["melodia"] *= 0.2 + 2.5 * melodica
+        for tipo in ("celda", "trino", "jumptrill", "chordjack", "brackets", "escalera"):
+            if tipo in pesos:
+                pesos[tipo] *= 0.3 + 1.7 * (1 - melodica)
+        # Los patrones de acordes son percusivos: desaparecen si la percusión está en cero.
+        for tipo in ("jumptrill", "chordjack", "brackets"):
+            if tipo in pesos:
+                pesos[tipo] *= min(1.0, 2 * self.o.percusion)
         return {t: w for t, w in pesos.items() if w > 0}
 
     def _generar_patron(self, tipo, frase, rng):
@@ -554,7 +606,9 @@ class _Asignador:
         p = self.p
         if p.acorde_max <= 1 or evento.nivel > (2 if p.nombre == "Insane" else 1):
             return 1
-        fuerza = max(evento.bajo, 0.85 * evento.medio)
+        # Los acordes marcan golpes de bombo y caja, en proporción al peso de la percusión.
+        fuerza = max(evento.fuerza("bombo"), 0.85 * evento.fuerza("caja"))
+        fuerza *= min(1.0, 2 * self.o.percusion)
         umbral = {"Easy": 0.8, "Normal": 0.65, "Hard": 0.55, "Insane": 0.5}[p.nombre]
         if fuerza < umbral:
             return 1
@@ -603,7 +657,7 @@ class _Asignador:
         minimo = p.hold_min_pulsos * a.periodo
         if sostenido < minimo:
             return
-        probabilidad = p.prob_hold * self.o.holds * (1.3 if self.o.estilo == "melodia" else 1.0)
+        probabilidad = p.prob_hold * self.o.holds * (0.6 + 0.8 * self.o.melodia)
         if self.rng.random() >= probabilidad:
             return
         pasos = np.floor((nota.tiempo + sostenido - a.offset) / self.paso_hold + 1e-6)
@@ -670,7 +724,7 @@ class _Asignador:
 
 def generar_mapa(analisis: Analisis, opciones: OpcionesGeneracion) -> Mapa:
     perfil = obtener_perfil(opciones.dificultad, opciones.teclas)
-    eventos = construir_eventos(analisis, perfil, opciones.estilo)
+    eventos = construir_eventos(analisis, perfil, opciones)
     eventos = seleccionar_eventos(analisis, eventos, perfil, opciones.densidad)
     asignador = _Asignador(analisis, opciones, perfil)
     notas = asignador.asignar(eventos)

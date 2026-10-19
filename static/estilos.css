@@ -120,3 +120,20 @@ canvas { width: 100%; display: block; border-radius: 8px; background: #17151f; }
 #densidad-mapa { height: 60px; cursor: pointer; }
 .enlace { text-align: center; }
 .enlace input { text-align: left; }
+
+.mezcla .preajustes { display: flex; flex-wrap: wrap; gap: 8px; width: 100%; }
+.mezcla .rejilla { width: 100%; }
+.mezcla .ayuda { width: 100%; }
+button.ficha { font-size: .9rem; }
+button.ficha.activa { border-color: var(--acento); color: var(--acento); }
+.ficha-imagen input { padding: 6px; }
+.ficha-imagen small { color: var(--suave); }
+.cabecera-analisis { display: flex; gap: 16px; align-items: flex-start; }
+.cabecera-analisis > div { flex: 1; display: grid; gap: 10px; min-width: 0; }
+#miniatura { width: 220px; max-width: 40%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--borde); }
+.subtitulo { margin: 4px 0 0; font-size: .95rem; color: var(--suave); font-weight: 600; }
+#capas { height: 130px; }
+@media (max-width: 700px) {
+  .cabecera-analisis { flex-direction: column; }
+  #miniatura { max-width: 100%; width: 100%; }
+}

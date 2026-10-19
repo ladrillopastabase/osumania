@@ -12,7 +12,8 @@ from motor.analisis import analizar
 from motor.audio import EXTENSIONES_ADMITIDAS, ErrorAudio, cargar_audio, preparar_audio_osu
 from motor.dificultades import NOMBRES as DIFICULTADES
 from motor.exportador import Metadatos, empaquetar_osz, exportar_osu, nombre_archivo, nombre_version
-from motor.generador import ESTILOS, OpcionesGeneracion, generar_mapa
+from motor.generador import OpcionesGeneracion, generar_mapa
+from motor.imagen import EXTENSIONES_IMAGEN, elegir_fondo
 from motor.validador import validar
 from motor.youtube import descargar_audio, es_url_youtube
 
@@ -81,12 +82,18 @@ def generar():
             return jsonify(error="Formato no admitido. Usa MP3, WAV, FLAC u OGG."), 400
     elif not es_url_youtube(url):
         return jsonify(error="El enlace no es de YouTube."), 400
+    imagen = request.files.get("imagen")
+    if imagen is not None and not imagen.filename:
+        imagen = None
+    if imagen is not None and Path(imagen.filename).suffix.lower() not in EXTENSIONES_IMAGEN:
+        return jsonify(error="La imagen debe ser JPG, PNG o WEBP."), 400
 
     teclas = [int(t) for t in _lista("teclas", {"4", "7"}, ["4"])]
     dificultades = _lista("dificultades", set(DIFICULTADES), list(DIFICULTADES))
-    estilo = request.form.get("estilo", "hibrido")
-    if estilo not in ESTILOS:
-        return jsonify(error="Estilo desconocido."), 400
+    percusion = _numero("percusion", 0.5)
+    melodia = _numero("melodia", 0.5)
+    if percusion + melodia < 0.05:
+        return jsonify(error="La percusión y la melodía no pueden estar ambas en cero."), 400
     densidad = _numero("densidad", 1.0)
     holds = _numero("holds", 1.0)
     semilla = _numero("semilla", 0, int)
@@ -102,7 +109,7 @@ def generar():
     if archivo is not None:
         original = carpeta / f"original{extension}"
         archivo.save(original)
-        sugerido = {"titulo": Path(archivo.filename).stem, "artista": "Desconocido"}
+        sugerido = {"titulo": Path(archivo.filename).stem, "artista": "Desconocido", "miniatura": None}
     else:
         try:
             original, sugerido = descargar_audio(url, carpeta)
@@ -127,17 +134,26 @@ def generar():
         shutil.rmtree(carpeta, ignore_errors=True)
         return jsonify(error=str(error)), 400
 
+    subida = None
+    if imagen is not None:
+        subida = carpeta / f"imagen{Path(imagen.filename).suffix.lower()}"
+        imagen.save(subida)
+    fondo = elegir_fondo(carpeta / "osz" / "fondo.jpg", imagen_subida=subida,
+                         miniatura=sugerido.get("miniatura"), audio=original)
+
     mapas = []
     archivos = {}
     for k in teclas:
         for dificultad in dificultades:
-            opciones = OpcionesGeneracion(teclas=k, dificultad=dificultad, estilo=estilo,
-                                          densidad=densidad, holds=holds, semilla=semilla)
+            opciones = OpcionesGeneracion(teclas=k, dificultad=dificultad, percusion=percusion,
+                                          melodia=melodia, densidad=densidad, holds=holds,
+                                          semilla=semilla)
             mapa = generar_mapa(analisis, opciones)
             informe = validar(mapa, analisis.duracion)
             version = nombre_version(mapa)
             nombre = nombre_archivo(meta, version)
-            contenido = exportar_osu(mapa, analisis, meta, audio=audio_osu.name)
+            contenido = exportar_osu(mapa, analisis, meta, audio=audio_osu.name,
+                                     fondo=fondo.name if fondo else None)
             archivos[nombre] = contenido
             (carpeta / f"{len(mapas)}.osu").write_text(contenido, encoding="utf-8")
             mapas.append({
@@ -152,10 +168,10 @@ def generar():
             })
 
     nombre_osz = nombre_archivo(meta, "set")[:-len(" [set].osu")] + ".osz"
-    empaquetar_osz(carpeta / "mapas.osz", audio_osu, archivos)
+    empaquetar_osz(carpeta / "mapas.osz", audio_osu, archivos, fondo=fondo)
     (carpeta / "trabajo.json").write_text(json.dumps({
         "osz": nombre_osz, "archivos": [m["archivo"] for m in mapas],
-        "audio": audio_osu.name}), encoding="utf-8")
+        "audio": audio_osu.name, "fondo": fondo.name if fondo else None}), encoding="utf-8")
 
     return jsonify(
         id=id_trabajo,
@@ -164,6 +180,7 @@ def generar():
         mapas=mapas,
         osz=f"/api/trabajos/{id_trabajo}/osz",
         audio=f"/api/trabajos/{id_trabajo}/audio",
+        fondo=f"/api/trabajos/{id_trabajo}/fondo" if fondo else None,
         metadatos={"titulo": meta.titulo, "artista": meta.artista},
     )
 
@@ -192,6 +209,15 @@ def audio_trabajo(id_trabajo):
     carpeta = _carpeta_trabajo(id_trabajo)
     datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
     return send_file(carpeta / "osz" / datos["audio"], conditional=True)
+
+
+@app.get("/api/trabajos/<id_trabajo>/fondo")
+def fondo_trabajo(id_trabajo):
+    carpeta = _carpeta_trabajo(id_trabajo)
+    datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+    if not datos.get("fondo"):
+        abort(404)
+    return send_file(carpeta / "osz" / datos["fondo"], mimetype="image/jpeg")
 
 
 @app.errorhandler(400)
