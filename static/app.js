@@ -17,7 +17,6 @@ const COLORES_COLUMNA = {
 
 const estado = {
   archivo: null,
-  urlAudio: null,
   resultado: null,
   mapa: null,
   animacion: null,
@@ -32,6 +31,7 @@ const entradaAudio = $("audio");
 function elegirArchivo(archivo) {
   if (!archivo) return;
   estado.archivo = archivo;
+  $("url").value = "";
   $("nombre-audio").textContent = archivo.name;
   // "Artista - Título.mp3" rellena los metadatos si están vacíos.
   const base = archivo.name.replace(/\.[^.]+$/, "");
@@ -45,6 +45,13 @@ function elegirArchivo(archivo) {
 }
 
 entradaAudio.addEventListener("change", () => elegirArchivo(entradaAudio.files[0]));
+$("url").addEventListener("input", () => {
+  if (!$("url").value.trim() || !estado.archivo) return;
+  // Un enlace reemplaza al archivo elegido.
+  estado.archivo = null;
+  entradaAudio.value = "";
+  $("nombre-audio").textContent = "Arrastra o elige un audio";
+});
 ["dragenter", "dragover"].forEach((ev) => zona.addEventListener(ev, (e) => {
   e.preventDefault();
   zona.classList.add("arrastrando");
@@ -74,7 +81,11 @@ function valoresMarcados(nombre) {
 
 formulario.addEventListener("submit", async (e) => {
   e.preventDefault();
-  if (!estado.archivo) return;
+  const url = $("url").value.trim();
+  if (!estado.archivo && !url) {
+    mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
+    return;
+  }
   const teclas = valoresMarcados("teclas");
   const dificultades = valoresMarcados("dificultades");
   if (!teclas || !dificultades) {
@@ -82,7 +93,8 @@ formulario.addEventListener("submit", async (e) => {
     return;
   }
   const datos = new FormData();
-  datos.append("audio", estado.archivo);
+  if (estado.archivo) datos.append("audio", estado.archivo);
+  else datos.append("url", url);
   datos.append("teclas", teclas);
   datos.append("dificultades", dificultades);
   for (const campo of ["titulo", "artista", "creador", "estilo", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
@@ -91,7 +103,8 @@ formulario.addEventListener("submit", async (e) => {
 
   const boton = $("boton-generar");
   boton.disabled = true;
-  mostrarEstado("Analizando la canción y generando mapas…");
+  mostrarEstado(estado.archivo ? "Analizando la canción y generando mapas…"
+    : "Descargando el audio de YouTube, analizando y generando mapas…");
   try {
     const respuesta = await fetch("/api/generar", { method: "POST", body: datos });
     const json = await respuesta.json().catch(() => ({ error: "Respuesta inválida del servidor." }));
@@ -174,9 +187,9 @@ function mostrarResultados(json) {
     $("campo").scrollIntoView({ behavior: "smooth", block: "center" });
   }));
 
-  if (estado.urlAudio) URL.revokeObjectURL(estado.urlAudio);
-  estado.urlAudio = URL.createObjectURL(estado.archivo);
-  reproductor.src = estado.urlAudio;
+  if (!$("titulo").value) $("titulo").value = json.metadatos.titulo;
+  if (!$("artista").value) $("artista").value = json.metadatos.artista;
+  reproductor.src = json.audio;
   elegirMapa(json.mapas[0].indice);
 }
 

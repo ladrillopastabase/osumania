@@ -1,6 +1,6 @@
 # Generador automático de beatmaps para osu!mania
 
-Aplicación web que recibe una canción (MP3 / WAV / FLAC / OGG), la analiza y genera
+Aplicación web que recibe una canción (MP3 / WAV / FLAC / OGG, o un enlace de YouTube), la analiza y genera
 beatmaps de **4K y 7K** en cuatro dificultades (**Easy · Normal · Hard · Insane**),
 con patrones híbridos basados en ritmo, melodía y jugabilidad. Los mapas se
 previsualizan en el navegador y se descargan como `.osu` sueltos o como un `.osz`
@@ -8,8 +8,8 @@ listo para importar en osu! (basta con abrirlo).
 
 ## Puesta en marcha
 
-Requisitos: Python 3.11+ y `ffmpeg` en el PATH (para MP3/FLAC/OGG y para convertir
-el audio a MP3 dentro del `.osz`; sin ffmpeg solo se admite WAV).
+Requisitos: Python 3.11+ y `ffmpeg` en el PATH (para MP3/FLAC/OGG, para enlaces de
+YouTube y para convertir el audio a MP3 dentro del `.osz`; sin ffmpeg solo se admite WAV).
 
 ```bash
 pip install -r requirements.txt
@@ -89,6 +89,11 @@ patrones manteniendo el ritmo.
 
 ### Parámetros en la interfaz
 
+- **Audio**: un archivo o un enlace de YouTube (`youtube.com`, `youtu.be`, `music.youtube.com`).
+  El audio se extrae con [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`motor/youtube.py`),
+  solo del video indicado (no listas), hasta 15 minutos y sin transmisiones en vivo. Título y
+  artista se toman del video ("Artista - Tema") si no se escriben a mano. Si YouTube cambia
+  y la descarga falla, actualiza yt-dlp: `pip install -U yt-dlp`.
 - **Modos** 4K / 7K y **dificultades** a generar.
 - **Estilo**: híbrido (por defecto), rítmico (sigue la percusión) o melódico (sigue la melodía).
 - **Densidad** (0.5×–1.8×) y **cantidad de holds** (0×–2.5×).
@@ -103,6 +108,8 @@ heredados para kiai, `PreviewTime` en el primer clímax). Las notas usan
 incluye el audio (WAV/FLAC se convierten a MP3) y todas las dificultades.
 
 ## Limitaciones conocidas
+
+- Usa la descarga desde YouTube solo con contenido que tengas derecho a usar.
 
 - Supone **tempo constante**: canciones con cambios de BPM o grabaciones en vivo con
   tempo variable quedarán desfasadas en algunas partes (se puede forzar BPM/offset).

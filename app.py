@@ -14,6 +14,7 @@ from motor.dificultades import NOMBRES as DIFICULTADES
 from motor.exportador import Metadatos, empaquetar_osz, exportar_osu, nombre_archivo, nombre_version
 from motor.generador import ESTILOS, OpcionesGeneracion, generar_mapa
 from motor.validador import validar
+from motor.youtube import descargar_audio, es_url_youtube
 
 RAIZ = Path(__file__).resolve().parent
 TRABAJOS = RAIZ / "trabajos"
@@ -69,11 +70,17 @@ def inicio():
 def generar():
     _limpiar_trabajos_viejos()
     archivo = request.files.get("audio")
-    if archivo is None or not archivo.filename:
-        return jsonify(error="Falta el archivo de audio."), 400
-    extension = Path(archivo.filename).suffix.lower()
-    if extension not in EXTENSIONES_ADMITIDAS:
-        return jsonify(error="Formato no admitido. Usa MP3, WAV, FLAC u OGG."), 400
+    if archivo is not None and not archivo.filename:
+        archivo = None
+    url = request.form.get("url", "").strip()
+    if archivo is None and not url:
+        return jsonify(error="Sube un archivo de audio o pega un enlace de YouTube."), 400
+    if archivo is not None:
+        extension = Path(archivo.filename).suffix.lower()
+        if extension not in EXTENSIONES_ADMITIDAS:
+            return jsonify(error="Formato no admitido. Usa MP3, WAV, FLAC u OGG."), 400
+    elif not es_url_youtube(url):
+        return jsonify(error="El enlace no es de YouTube."), 400
 
     teclas = [int(t) for t in _lista("teclas", {"4", "7"}, ["4"])]
     dificultades = _lista("dificultades", set(DIFICULTADES), list(DIFICULTADES))
@@ -88,17 +95,26 @@ def generar():
     if bpm is not None and not 30 <= bpm <= 400:
         return jsonify(error="El BPM debe estar entre 30 y 400."), 400
 
-    meta = Metadatos(
-        titulo=request.form.get("titulo", "").strip() or Path(archivo.filename).stem,
-        artista=request.form.get("artista", "").strip() or "Desconocido",
-        creador=request.form.get("creador", "").strip() or "Generador osu!mania",
-    )
-
     id_trabajo = str(uuid.uuid4())
     carpeta = TRABAJOS / id_trabajo
     carpeta.mkdir(parents=True)
-    original = carpeta / f"original{extension}"
-    archivo.save(original)
+
+    if archivo is not None:
+        original = carpeta / f"original{extension}"
+        archivo.save(original)
+        sugerido = {"titulo": Path(archivo.filename).stem, "artista": "Desconocido"}
+    else:
+        try:
+            original, sugerido = descargar_audio(url, carpeta)
+        except ErrorAudio as error:
+            shutil.rmtree(carpeta, ignore_errors=True)
+            return jsonify(error=str(error)), 400
+
+    meta = Metadatos(
+        titulo=request.form.get("titulo", "").strip() or sugerido["titulo"],
+        artista=request.form.get("artista", "").strip() or sugerido["artista"],
+        creador=request.form.get("creador", "").strip() or "Generador osu!mania",
+    )
 
     try:
         inicio_t = time.time()
@@ -138,7 +154,8 @@ def generar():
     nombre_osz = nombre_archivo(meta, "set")[:-len(" [set].osu")] + ".osz"
     empaquetar_osz(carpeta / "mapas.osz", audio_osu, archivos)
     (carpeta / "trabajo.json").write_text(json.dumps({
-        "osz": nombre_osz, "archivos": [m["archivo"] for m in mapas]}), encoding="utf-8")
+        "osz": nombre_osz, "archivos": [m["archivo"] for m in mapas],
+        "audio": audio_osu.name}), encoding="utf-8")
 
     return jsonify(
         id=id_trabajo,
@@ -146,6 +163,8 @@ def generar():
         analisis=analisis.resumen(),
         mapas=mapas,
         osz=f"/api/trabajos/{id_trabajo}/osz",
+        audio=f"/api/trabajos/{id_trabajo}/audio",
+        metadatos={"titulo": meta.titulo, "artista": meta.artista},
     )
 
 
@@ -166,6 +185,13 @@ def descargar_osz(id_trabajo):
     datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
     return send_file(carpeta / "mapas.osz", as_attachment=True, download_name=datos["osz"],
                      mimetype="application/octet-stream")
+
+
+@app.get("/api/trabajos/<id_trabajo>/audio")
+def audio_trabajo(id_trabajo):
+    carpeta = _carpeta_trabajo(id_trabajo)
+    datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+    return send_file(carpeta / "osz" / datos["audio"], conditional=True)
 
 
 @app.errorhandler(400)

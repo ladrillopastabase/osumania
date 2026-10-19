@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Generador osu!mania</title>
-  <link rel="stylesheet" href="/static/estilos.css?v=1">
+  <link rel="stylesheet" href="/static/estilos.css?v=2">
 </head>
 <body>
   <header class="cabecera">
@@ -15,9 +15,13 @@
   <main>
     <form id="formulario" class="tarjeta">
       <label id="zona-audio" class="zona-audio">
-        <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*" required>
+        <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
         <strong id="nombre-audio">Arrastra o elige un audio</strong>
         <small>MP3 · WAV · FLAC · OGG (máx. 80 MB)</small>
+      </label>
+
+      <label class="enlace">… o pega un enlace de YouTube
+        <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
       </label>
 
       <div class="rejilla">
@@ -109,6 +113,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=2"></script>
+  <script src="/static/app.js?v=3"></script>
 </body>
 </html>

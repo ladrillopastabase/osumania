@@ -118,3 +118,5 @@ canvas { width: 100%; display: block; border-radius: 8px; background: #17151f; }
 
 #linea-tiempo { height: 90px; }
 #densidad-mapa { height: 60px; cursor: pointer; }
+.enlace { text-align: center; }
+.enlace input { text-align: left; }
