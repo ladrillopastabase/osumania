@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 
 from motor.analisis import analizar
@@ -69,3 +70,48 @@ def test_opciones_invalidas():
         OpcionesGeneracion(teclas=5)
     with pytest.raises(ValueError):
         OpcionesGeneracion(estilo="otro")
+
+
+# --- calidad rítmica sobre una canción con ritmo conocido ---------------------
+
+@pytest.fixture(scope="module")
+def realista():
+    from sintetico import cancion_realista
+    senal, eventos = cancion_realista()
+    return analizar(senal, SR), np.array(sorted({e[0] for e in eventos}))
+
+
+@pytest.mark.parametrize("teclas", [4, 7])
+@pytest.mark.parametrize("dificultad", NOMBRES)
+def test_sin_notas_fantasma(realista, teclas, dificultad):
+    analisis, verdad = realista
+    mapa = generar_mapa(analisis, OpcionesGeneracion(teclas, dificultad))
+    distancias = [np.min(np.abs(verdad - n.tiempo)) for n in mapa.notas]
+    assert max(distancias) < 0.025  # toda nota coincide con algo que suena
+
+
+@pytest.mark.parametrize("dificultad", ["Hard", "Insane"])
+def test_cubre_golpes_y_patrones_largos(realista, dificultad):
+    analisis, verdad = realista
+    mapa = generar_mapa(analisis, OpcionesGeneracion(4, dificultad))
+    tiempos = np.array([n.tiempo for n in mapa.notas])
+    from sintetico import cancion_realista
+    fuertes = [e[0] for e in cancion_realista()[1] if e[1] != "platillo"]
+    cubiertos = np.mean([np.min(np.abs(tiempos - t)) < 0.02 for t in fuertes])
+    assert cubiertos > 0.9
+    largas = [n for tipo, n in mapa.frases if tipo != "suelta"]
+    assert np.mean(largas) >= 8
+
+
+def test_ritmo_repetido_mismo_patron(realista):
+    analisis, _ = realista
+    mapa = generar_mapa(analisis, OpcionesGeneracion(4, "Hard"))
+    # El coro se repite: sus compases deben tener el mismo ritmo.
+    compas = 4 * analisis.periodo
+    def ritmo(indice):
+        inicio = analisis.offset + indice * compas
+        return {round((n.tiempo - inicio) / (analisis.periodo / 4)) for n in mapa.notas
+                if inicio - 1e-3 <= n.tiempo < inicio + compas - 1e-3}
+    coro = [ritmo(i) for i in range(13, 19)]
+    iguales = sum(a == b for a, b in zip(coro, coro[1:]))
+    assert iguales >= 4

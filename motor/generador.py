@@ -2,24 +2,32 @@
 
 Convierte un `Analisis` en notas de osu!mania en cuatro etapas:
 
-1. Rejilla: subdivide cada pulso según la dificultad (1/2, 1/4 y 1/3 donde la
-   música tiene tresillos).
-2. Selección de eventos: puntúa cada punto de la rejilla combinando golpes
-   (envolvente de onset), cambios melódicos y peso métrico, y elige por compás
-   tantos eventos como pida la densidad objetivo de la sección.
-3. Asignación de columnas: cada evento busca la columna (o el acorde) de menor
-   costo. El costo mezcla una posición preferida —que sale del contorno
-   melódico, del motivo rítmico activo (escalera, trino, alternancia de manos)
-   y de la banda dominante (graves a la izquierda, agudos a la derecha)— con
-   restricciones de jugabilidad: jacks demasiado rápidos, anclas, holds activos
-   y equilibrio entre manos.
-4. Holds: las notas cuyo sonido se sostiene se alargan hasta la rejilla.
+1. Eventos: cada onset detectado se ajusta a la rejilla permitida por la
+   dificultad (1/1 y 1/2 en Easy/Normal; 1/4 o 1/3 en Hard/Insane). Si un
+   onset no cae cerca de ningún punto permitido se descarta: nunca se mueve un
+   golpe a otro lugar ni se inventan notas donde no suena nada.
+2. Selección: cada evento tiene una saliencia según qué instrumento suena
+   (bombo/graves, caja/medios, platillos/agudos, cambio melódico). Por sección
+   se toman los eventos más salientes hasta la densidad objetivo; el umbral es
+   el mismo para toda la sección, así cada compás sigue las mismas capas de la
+   música. Luego se regulariza: los golpes que se repiten en los compases
+   vecinos se incluyen y los aislados débiles se quitan.
+3. Frases y patrones: los eventos se agrupan en frases de ritmo constante
+   (ráfagas de 1/4, corcheas, etc.). Cada frase recibe un patrón completo
+   —escalera, trino, celda repetida, jumptrill, brackets, chordjack, manos
+   alternas o contorno melódico— que se mantiene toda la frase. Si el mismo
+   ritmo vuelve a aparecer, se repite el patrón (en espejo una vez sí y otra
+   no), como hacen los mapeadores.
+4. Jugabilidad: cada nota del patrón se coloca si la columna está libre
+   (sin jacks más rápidos que el mínimo ni holds activos); si no, se usa la
+   columna libre más cercana. Los golpes fuertes en tiempo (bombo, caja) se
+   vuelven acordes y las notas sostenidas, holds.
 
 Todo es determinista para una misma semilla.
 """
 
+from bisect import bisect_left, insort
 from dataclasses import dataclass, field
-from itertools import combinations
 
 import numpy as np
 
@@ -28,19 +36,15 @@ from .dificultades import PerfilDificultad, perfil as obtener_perfil
 
 ESTILOS = ("hibrido", "ritmo", "melodia")
 
-# Pesos (melodía, motivo rítmico, banda) de la posición preferida según el estilo.
-_PESOS_ESTILO = {
-    "hibrido": (0.65, 0.5, 0.25),
-    "ritmo": (0.15, 0.75, 0.45),
-    "melodia": (1.0, 0.25, 0.1),
+# Pesos de saliencia (graves, medios, agudos, cambio melódico) según el estilo.
+_PESOS_SALIENCIA = {
+    "hibrido": (1.0, 0.9, 0.45, 0.8),
+    "ritmo": (1.1, 0.95, 0.6, 0.3),
+    "melodia": (0.6, 0.8, 0.25, 1.3),
 }
-# Pesos (golpe, melodía) del puntaje de selección de eventos.
-_PESOS_SELECCION = {
-    "hibrido": (0.85, 0.55),
-    "ritmo": (1.0, 0.2),
-    "melodia": (0.55, 1.0),
-}
-_PESO_NIVEL = {0: 0.35, 1: 0.25, 2: 0.1, 3: 0.0}
+_BONO_NIVEL = {0: 0.15, 1: 0.1, 2: 0.05, 3: 0.0}
+_FACTOR_SECCION = {"tranquila": 0.6, "media": 0.9, "intensa": 1.1, "clímax": 1.25}
+_UNIDADES_PULSO = 12  # 1/4 = 3 unidades, 1/3 = 4 unidades
 
 
 @dataclass
@@ -79,21 +83,26 @@ class Mapa:
     perfil: PerfilDificultad
     notas: list = field(default_factory=list)
     divisor_editor: int = 4
+    frases: list = field(default_factory=list)  # (tipo de patrón, cantidad de eventos)
 
 
 @dataclass
-class _Punto:
+class _Evento:
     tiempo: float
+    compas: int       # índice de compás relativo al offset
+    posicion: int     # posición dentro del compás en unidades de 1/12 de pulso
     nivel: int        # 0 tiempo fuerte, 1 pulso, 2 medio pulso, 3 subdivisión menor
-    tolerancia: float
-    puntaje: float = 0.0
-    golpe: float = 0.0
     bajo: float = 0.0
+    medio: float = 0.0
     alto: float = 0.0
+    melodia: float = 0.0
+    altura: float = 60.0
+    confianza: float = 0.0
+    saliencia: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# 1. Rejilla
+# 1. Eventos ajustados a la rejilla
 # ---------------------------------------------------------------------------
 
 def _usa_tresillos(analisis: Analisis, inicio: float, periodo: float) -> bool:
@@ -109,33 +118,6 @@ def _usa_tresillos(analisis: Analisis, inicio: float, periodo: float) -> bool:
     return error_tercios < 0.5 * error_cuartos
 
 
-def construir_rejilla(analisis: Analisis, perfil: PerfilDificultad) -> list:
-    periodo = analisis.periodo
-    puntos = []
-    for t in analisis.pulsos():
-        indice = analisis.indice_pulso(t)
-        divisor = perfil.divisor
-        if perfil.tresillos and _usa_tresillos(analisis, t, periodo):
-            divisor = 3
-        paso = periodo / divisor
-        for k in range(divisor):
-            tiempo = t + k * paso
-            if tiempo >= analisis.duracion - 0.05:
-                break
-            if k == 0:
-                nivel = 0 if indice % analisis.compas == 0 else 1
-            elif divisor == 4 and k == 2 or divisor == 2:
-                nivel = 2
-            else:
-                nivel = 3
-            puntos.append(_Punto(tiempo, nivel, min(0.035, paso * 0.4)))
-    return puntos
-
-
-# ---------------------------------------------------------------------------
-# 2. Selección de eventos
-# ---------------------------------------------------------------------------
-
 def _cambio_melodico(analisis: Analisis, t: float) -> float:
     confianza = analisis.maximo(analisis.confianza_melodia, t + 0.02, 0.02)
     if confianza < 0.25:
@@ -148,62 +130,289 @@ def _cambio_melodico(analisis: Analisis, t: float) -> float:
     return confianza * min(1.0, salto / 3.0)
 
 
-def puntuar(analisis: Analisis, puntos: list, perfil: PerfilDificultad, estilo: str) -> None:
-    peso_golpe, peso_melodia = _PESOS_SELECCION[estilo]
-    for p in puntos:
-        p.golpe = analisis.maximo(analisis.env, p.tiempo, p.tolerancia)
-        p.bajo = analisis.maximo(analisis.env_bajo, p.tiempo, p.tolerancia)
-        p.alto = analisis.maximo(analisis.env_alto, p.tiempo, p.tolerancia)
-        melodia = _cambio_melodico(analisis, p.tiempo)
-        musical = peso_golpe * p.golpe + peso_melodia * melodia
-        if analisis.valor(analisis.intensidad, p.tiempo) < 0.06 and musical < 0.15:
-            p.puntaje = 0.0
+def construir_eventos(analisis: Analisis, perfil: PerfilDificultad, estilo: str) -> list:
+    """Ajusta cada onset al punto permitido más cercano de la rejilla."""
+    periodo = analisis.periodo
+    tolerancia = 0.03
+    tresillos_por_pulso: dict[int, bool] = {}
+    eventos: dict[tuple[int, int], _Evento] = {}
+    pesos = _PESOS_SALIENCIA[estilo]
+
+    for t, _fuerza in zip(analisis.onsets, analisis.fuerzas):
+        relativo = (t - analisis.offset) / periodo
+        pulso = int(np.floor(relativo + 0.5 / _UNIDADES_PULSO))
+        fraccion = relativo - pulso
+        if perfil.divisor <= 2:
+            divisor = 2
+        else:
+            if pulso not in tresillos_por_pulso:
+                inicio = analisis.offset + pulso * periodo
+                tresillos_por_pulso[pulso] = perfil.tresillos and _usa_tresillos(analisis, inicio, periodo)
+            divisor = 3 if tresillos_por_pulso[pulso] else 4
+        k = int(round(fraccion * divisor))
+        tiempo = analisis.offset + (pulso + k / divisor) * periodo
+        if abs(tiempo - t) > min(tolerancia, 0.45 * periodo / divisor):
+            continue  # no cae en la rejilla de esta dificultad: no se mueve, se descarta
+        if k == divisor:
+            pulso, k = pulso + 1, 0
+        if tiempo < 0 or tiempo >= analisis.duracion - 0.05:
             continue
-        metrico = _PESO_NIVEL[p.nivel] * perfil.peso_metrico if musical > 0.1 else 0.0
-        p.puntaje = musical + metrico
+        compas, pulso_en_compas = divmod(pulso, analisis.compas)
+        posicion = pulso_en_compas * _UNIDADES_PULSO + k * (_UNIDADES_PULSO // divisor)
+        if k == 0:
+            nivel = 0 if pulso_en_compas == 0 else 1
+        elif 2 * k == divisor:
+            nivel = 2
+        else:
+            nivel = 3
 
+        clave = (compas, posicion)
+        evento = eventos.get(clave)
+        if evento is None:
+            evento = eventos[clave] = _Evento(float(tiempo), compas, posicion, nivel)
+        evento.bajo = max(evento.bajo, analisis.maximo(analisis.env_bajo, t, 0.02))
+        evento.medio = max(evento.medio, analisis.maximo(analisis.env_medio, t, 0.02))
+        evento.alto = max(evento.alto, analisis.maximo(analisis.env_alto, t, 0.02))
+        evento.melodia = max(evento.melodia, _cambio_melodico(analisis, t))
 
-def _factor_seccion(analisis: Analisis, t: float) -> float:
-    seccion = analisis.seccion_en(t)
-    if seccion is None:
-        return 1.0
-    return {"tranquila": 0.6, "media": 0.9, "intensa": 1.1, "clímax": 1.25}[seccion.etiqueta]
-
-
-def seleccionar_eventos(analisis: Analisis, puntos: list, perfil: PerfilDificultad,
-                        densidad: float) -> list:
-    duracion_compas = analisis.periodo * analisis.compas
-    elegidos = []
-    i = 0
-    umbral = 0.12
-    while i < len(puntos):
-        inicio = puntos[i].tiempo
-        j = i
-        while j < len(puntos) and puntos[j].tiempo < inicio + duracion_compas - 1e-6:
-            j += 1
-        grupo = puntos[i:j]
-        a = analisis.frame(inicio)
-        b = max(analisis.frame(inicio + duracion_compas), a + 1)
-        intensidad = float(analisis.intensidad[a:b].mean())
-        objetivo = (perfil.nps * densidad * (0.45 + 1.1 * intensidad)
-                    * _factor_seccion(analisis, inicio) * duracion_compas)
-        cantidad = int(round(objetivo))
-
-        tomados = []
-        for p in sorted(grupo, key=lambda q: -q.puntaje):
-            if len(tomados) >= cantidad or p.puntaje < umbral:
-                break
-            vecinos = tomados + elegidos[-2:]
-            if any(abs(p.tiempo - q.tiempo) < perfil.separacion_min - 1e-6 for q in vecinos):
-                continue
-            tomados.append(p)
-        elegidos.extend(sorted(tomados, key=lambda q: q.tiempo))
-        i = j
-    return elegidos
+    for e in eventos.values():
+        e.altura = analisis.valor(analisis.altura, e.tiempo + 0.03)
+        e.confianza = analisis.maximo(analisis.confianza_melodia, e.tiempo + 0.02, 0.02)
+        musical = (pesos[0] * e.bajo + pesos[1] * e.medio + pesos[2] * e.alto
+                   + pesos[3] * e.melodia) / (pesos[0] + pesos[1])
+        e.saliencia = musical + _BONO_NIVEL[e.nivel] * perfil.peso_metrico * min(1.0, musical * 4)
+    return sorted(eventos.values(), key=lambda e: e.tiempo)
 
 
 # ---------------------------------------------------------------------------
-# 3. Asignación de columnas y 4. holds
+# 2. Selección por sección y regularización entre compases
+# ---------------------------------------------------------------------------
+
+def _hay_espacio(tiempos: list, t: float, separacion: float) -> bool:
+    i = bisect_left(tiempos, t)
+    if i < len(tiempos) and tiempos[i] - t < separacion - 1e-6:
+        return False
+    return not (i > 0 and t - tiempos[i - 1] < separacion - 1e-6)
+
+
+def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificultad,
+                        densidad: float) -> list:
+    elegidos: set[int] = set()
+    tiempos: list[float] = []
+    umbrales: dict[int, float] = {}
+    seccion_de = []
+    for e in eventos:
+        s = analisis.seccion_en(e.tiempo)
+        seccion_de.append(analisis.secciones.index(s) if s is not None else 0)
+    # Piso global: en secciones casi vacías no se rellena con eco ni ruido.
+    piso = 0.08
+    if eventos:
+        proporcion = {"Easy": 0.3, "Normal": 0.3, "Hard": 0.25, "Insane": 0.2}.get(perfil.nombre, 0.3)
+        piso = max(piso, proporcion * float(np.percentile([e.saliencia for e in eventos], 75)))
+
+    for indice_seccion, seccion in enumerate(analisis.secciones or [None]):
+        miembros = [i for i, s in enumerate(seccion_de) if s == indice_seccion]
+        if not miembros:
+            continue
+        if seccion is None:
+            duracion, factor, intensidad = analisis.duracion, 1.0, 0.5
+        else:
+            duracion = seccion.fin - seccion.inicio
+            factor = _FACTOR_SECCION[seccion.etiqueta]
+            intensidad = seccion.intensidad
+        objetivo = int(round(perfil.nps * densidad * factor * (0.6 + 0.8 * intensidad) * duracion))
+        tomados = 0
+        umbral = 1.0
+        for i in sorted(miembros, key=lambda i: -eventos[i].saliencia):
+            if tomados >= objetivo or eventos[i].saliencia < piso:
+                break
+            if not _hay_espacio(tiempos, eventos[i].tiempo, perfil.separacion_min):
+                continue
+            elegidos.add(i)
+            insort(tiempos, eventos[i].tiempo)
+            tomados += 1
+            umbral = eventos[i].saliencia
+        umbrales[indice_seccion] = umbral
+
+    # Regularización: lo que se repite en los compases vecinos entra; lo aislado y débil sale.
+    por_posicion = {(e.compas, e.posicion): i for i, e in enumerate(eventos)}
+
+    def elegido_en(compas, posicion):
+        j = por_posicion.get((compas, posicion))
+        return j is not None and j in elegidos
+
+    for i, e in enumerate(eventos):
+        umbral = umbrales.get(seccion_de[i], 1.0)
+        vecinos = [elegido_en(e.compas + d, e.posicion) for d in (-2, -1, 1, 2)]
+        if i not in elegidos:
+            repetido = (vecinos[1] and vecinos[2]) or (vecinos[0] and vecinos[3])
+            if (repetido and e.saliencia >= max(piso, 0.5 * umbral)
+                    and _hay_espacio(tiempos, e.tiempo, perfil.separacion_min)):
+                elegidos.add(i)
+                insort(tiempos, e.tiempo)
+        elif not any(vecinos) and e.saliencia < 1.3 * umbral and e.nivel >= 2:
+            elegidos.discard(i)
+            tiempos.pop(bisect_left(tiempos, e.tiempo))
+    return [eventos[i] for i in sorted(elegidos, key=lambda i: eventos[i].tiempo)]
+
+
+# ---------------------------------------------------------------------------
+# 3. Frases de ritmo constante
+# ---------------------------------------------------------------------------
+
+def intervalo_minimo(frase: list) -> float:
+    if len(frase) < 2:
+        return 0.0
+    return float(min(b.tiempo - a.tiempo for a, b in zip(frase, frase[1:])))
+
+
+def agrupar_frases(eventos: list, periodo: float, maximo: int = 16) -> list:
+    """Agrupa eventos en frases de velocidad parecida.
+
+    Una frase admite intervalos entre su mínimo y el doble (una ráfaga con un
+    golpe faltante o un ritmo 3-3-2 siguen siendo la misma frase); se corta en
+    silencios de más de un pulso (dos en frases lentas), cuando el ritmo cambia
+    de velocidad o, en frases largas, al llegar a un tiempo del compás.
+    """
+    frases: list[list] = []
+    actual: list = []
+    minimo = None
+    for e in eventos:
+        if actual:
+            dt = e.tiempo - actual[-1].tiempo
+            lenta = minimo is not None and minimo > periodo * 1.01
+            silencio = dt > periodo * (2.01 if lenta or minimo is None else 1.01)
+            cambia = minimo is not None and (dt > 2.01 * minimo or dt < 0.49 * minimo)
+            if silencio or cambia or (len(actual) >= maximo and e.nivel <= 1):
+                frases.append(actual)
+                actual, minimo = [], None
+            else:
+                minimo = dt if minimo is None else min(minimo, dt)
+        actual.append(e)
+    if actual:
+        frases.append(actual)
+    return frases
+
+
+# ---------------------------------------------------------------------------
+# Catálogo de patrones
+# ---------------------------------------------------------------------------
+
+_CELDAS = {
+    4: [(0, 1, 2, 3), (3, 2, 1, 0), (0, 2, 1, 3), (3, 1, 2, 0), (0, 1, 3, 2), (1, 0, 2, 3),
+        (0, 3, 1, 2), (1, 3, 0, 2)],
+    7: [(0, 1, 2, 4, 5, 6), (6, 5, 4, 2, 1, 0), (0, 2, 4, 6, 5, 3, 1), (0, 4, 1, 5, 2, 6),
+        (2, 1, 0, 4, 5, 6), (0, 6, 1, 5, 2, 4), (1, 2, 4, 5), (0, 3, 6, 4, 2)],
+}
+_CELDAS_TERNARIAS = {
+    4: [(0, 1, 2), (3, 2, 1), (0, 2, 3), (3, 1, 0), (0, 1, 3, 2, 3, 1)],
+    7: [(0, 1, 2), (6, 5, 4), (0, 2, 4), (6, 4, 2), (1, 2, 3, 5, 4, 3)],
+}
+_JUMPTRILLS = {
+    4: [((0, 1), (2, 3)), ((0, 2), (1, 3)), ((0, 3), (1, 2))],
+    7: [((0, 1), (5, 6)), ((1, 2), (4, 5)), ((0, 2), (4, 6)), ((0, 1, 2), (4, 5, 6))],
+}
+
+
+def _manos(k: int):
+    izquierda = list(range(k // 2))
+    derecha = list(range(k - k // 2, k))
+    return izquierda, derecha
+
+
+def _patron_escalera(n, k, rng):
+    direccion = int(rng.choice([-1, 1]))
+    columna = int(rng.integers(k))
+    salida = []
+    for _ in range(n):
+        salida.append((columna,))
+        siguiente = columna + direccion
+        if not 0 <= siguiente < k:
+            direccion *= -1
+            siguiente = columna + direccion
+        columna = siguiente
+    return salida
+
+
+def _patron_trino(n, k, rng):
+    if k == 4:
+        parejas = [(1, 2), (0, 3), (0, 1), (2, 3), (0, 2), (1, 3)]
+    else:
+        parejas = [(2, 4), (1, 5), (0, 6), (1, 2), (4, 5), (2, 5), (3, 4)]
+    a, b = parejas[int(rng.integers(len(parejas)))]
+    return [((a,) if i % 2 == 0 else (b,)) for i in range(n)]
+
+
+def _patron_celda(n, k, rng, ternario=False):
+    celdas = (_CELDAS_TERNARIAS if ternario else _CELDAS)[k]
+    celda = celdas[int(rng.integers(len(celdas)))]
+    return [(celda[i % len(celda)],) for i in range(n)]
+
+
+def _patron_jumptrill(n, k, rng, acorde_max):
+    opciones = [j for j in _JUMPTRILLS[k] if len(j[0]) <= acorde_max]
+    a, b = opciones[int(rng.integers(len(opciones)))]
+    return [a if i % 2 == 0 else b for i in range(n)]
+
+
+def _patron_brackets(n, k, rng):
+    inicio = int(rng.integers(k - 3))
+    base = [(inicio, inicio + 1), (inicio + 2, inicio + 3), (inicio + 1, inicio + 2)]
+    return [base[i % 3] for i in range(n)]
+
+
+def _patron_chordjack(n, k, rng):
+    ancla = int(rng.integers(k))
+    otras = [c for c in range(k) if c != ancla]
+    rng.shuffle(otras)
+    return [(ancla, otras[i % len(otras)]) for i in range(n)]
+
+
+def _patron_manos(n, k, rng, eventos):
+    izquierda, derecha = _manos(k)
+    lado = int(rng.integers(2))
+    salida = []
+    for i in range(n):
+        mano = (izquierda, derecha)[lado]
+        if i > 0 and eventos[i].altura > eventos[i - 1].altura + 0.5:
+            columna = mano[-1] if lado == 1 else mano[min(1, len(mano) - 1)]
+        elif i > 0 and eventos[i].altura < eventos[i - 1].altura - 0.5:
+            columna = mano[0] if lado == 0 else mano[max(0, len(mano) - 2)]
+        else:
+            columna = mano[int(rng.integers(len(mano)))]
+        salida.append((columna,))
+        lado = 1 - lado
+    return salida
+
+
+def _patron_melodia(n, k, rng, eventos, jack_min):
+    """Las alturas de la frase se ordenan y se reparten por las columnas."""
+    alturas = np.array([e.altura for e in eventos])
+    distintas = np.unique(np.round(alturas))
+    if distintas.size <= 1:
+        return _patron_trino(n, k, rng)
+    rango = np.interp(np.round(alturas), distintas, np.linspace(0, 1, distintas.size))
+    ancho = min(k - 1, distintas.size - 1 + (k > 4))
+    base = int(rng.integers(0, k - ancho)) if k - ancho > 0 else 0
+    salida = []
+    anterior = None
+    for i, r in enumerate(rango):
+        columna = base + int(round(r * ancho))
+        if anterior is not None and columna == anterior:
+            dt = eventos[i].tiempo - eventos[i - 1].tiempo
+            if dt < 2 * jack_min:  # nota repetida rápida: trino con la vecina
+                columna = columna + 1 if columna + 1 < k else columna - 1
+        salida.append((columna,))
+        anterior = columna
+    return salida
+
+
+def _espejo(columnas, k):
+    return [tuple(sorted(k - 1 - c for c in cols)) for cols in columnas]
+
+
+# ---------------------------------------------------------------------------
+# 4. Colocación jugable
 # ---------------------------------------------------------------------------
 
 class _Asignador:
@@ -217,174 +426,172 @@ class _Asignador:
         self.uso = np.zeros(self.k)
         self.total_notas = 0
         self.fin_hold = np.full(self.k, -10.0)
-        self.historial: list[tuple[float, tuple]] = []
         self.notas: list[Nota] = []
         self.holds_activos: dict[int, Nota] = {}
-        self.direccion = 1
-        self.seccion_actual = None
-        self.trino = (1, 2)
-        self.rangos_melodia = self._rangos_melodia()
+        self.memoria: dict[tuple, tuple] = {}
+        self.frases: list[tuple[str, int]] = []
         self.limite_holds = 1 if perfil.nombre in ("Easy", "Normal") and self.k == 4 else max(1, self.k // 2)
         self.paso_hold = self.a.periodo / (2 if perfil.divisor <= 2 else 4)
         self.hueco_hold = max(0.06, perfil.jack_min * 0.5)  # tras soltar un hold
 
-    def _rangos_melodia(self):
-        rangos = {}
-        for s in self.a.secciones:
-            a = self.a.frame(s.inicio)
-            b = max(self.a.frame(s.fin), a + 1)
-            confiables = self.a.confianza_melodia[a:b] > 0.3
-            alturas = self.a.altura[a:b][confiables]
-            if alturas.size < 10:
-                alturas = self.a.altura[a:b]
-            bajo, alto = np.percentile(alturas, [10, 90])
-            rangos[id(s)] = (float(bajo), float(max(alto, bajo + 5)))
-        return rangos
+    # -- elección del patrón -------------------------------------------------
+    def _pesos_patrones(self, frase, dt):
+        p, k = self.p, self.k
+        pulsos = dt / self.a.periodo if dt else 1.0
+        n = len(frase)
+        intensidad = float(np.mean([self.a.valor(self.a.intensidad, e.tiempo) for e in frase]))
+        confianza = float(np.mean([e.confianza for e in frase]))
+        alturas = np.round([e.altura for e in frase])
+        movimiento = float(np.mean(np.diff(alturas) != 0)) if n > 1 else 0.0
+        agudos = float(np.mean([e.alto > max(e.bajo, e.medio) for e in frase]))
+        avanzado = p.nombre in ("Hard", "Insane")
+        rapido = pulsos <= 1 / 3 + 0.02
+        medio = not rapido and pulsos <= 0.5 + 0.02
 
-    # -- posición preferida ----------------------------------------------
-    def _nuevo_motivo(self, seccion):
-        self.seccion_actual = seccion
-        self.direccion = int(self.rng.choice([-1, 1]))
-        if self.k == 4:
-            parejas = [(1, 2), (0, 3), (0, 1), (2, 3), (0, 2), (1, 3)]
+        pesos = {}
+        if p.nombre == "Easy":
+            pesos = {"melodia": 3.0 * (0.3 + confianza), "manos": 2.0, "escalera": 1.0}
+        elif rapido:
+            pesos = {"escalera": 2.0, "celda": 3.0, "trino": 1.0 + 1.5 * max(agudos, 1 - movimiento),
+                     "melodia": 3.0 * confianza * movimiento}
+            if avanzado and intensidad > 0.55 and 2 * dt >= p.jack_min and p.acorde_max >= 2:
+                pesos["jumptrill"] = 1.5 if p.nombre == "Insane" else 0.7
+                if k == 7:
+                    pesos["brackets"] = 1.0
+        elif medio:
+            pesos = {"celda": 2.0, "melodia": 3.5 * confianza * (0.3 + movimiento), "manos": 2.0,
+                     "escalera": 1.0}
+            if avanzado and intensidad > 0.55 and p.acorde_max >= 2:
+                pesos["jumptrill"] = 1.0
+                if k == 7:
+                    pesos["brackets"] = 1.2
+                if p.nombre == "Insane" and dt >= p.jack_min * 1.1:
+                    pesos["chordjack"] = 1.0
         else:
-            parejas = [(2, 4), (1, 5), (0, 6), (1, 2), (4, 5), (2, 5)]
-        self.trino = parejas[int(self.rng.integers(len(parejas)))]
+            pesos = {"melodia": 3.0 * (0.3 + confianza), "manos": 2.0, "celda": 1.0}
 
-    def _preferencia(self, punto: _Punto) -> float:
-        a, k = self.a, self.k
-        t = punto.tiempo
-        seccion = a.seccion_en(t)
-        if seccion is not self.seccion_actual:
-            self._nuevo_motivo(seccion)
+        if self.o.estilo == "melodia" and "melodia" in pesos:
+            pesos["melodia"] *= 2.5
+        elif self.o.estilo == "ritmo":
+            for tipo in ("celda", "trino", "jumptrill", "chordjack", "brackets"):
+                if tipo in pesos:
+                    pesos[tipo] *= 1.5
+            if "melodia" in pesos:
+                pesos["melodia"] *= 0.4
+        return {t: w for t, w in pesos.items() if w > 0}
 
-        # Melodía: altura relativa dentro del rango de la sección.
-        confianza = a.maximo(a.confianza_melodia, t + 0.02, 0.02)
-        bajo, alto = self.rangos_melodia.get(id(seccion), (55.0, 75.0))
-        altura = a.valor(a.altura, t + 0.03)
-        pos_melodia = float(np.clip((altura - bajo) / (alto - bajo), 0, 1)) * (k - 1)
+    def _generar_patron(self, tipo, frase, rng):
+        n, k = len(frase), self.k
+        dt = intervalo_minimo(frase) or self.a.periodo
+        ternario = abs(dt / self.a.periodo - 1 / 3) < 0.03
+        if tipo == "escalera":
+            return _patron_escalera(n, k, rng)
+        if tipo == "trino":
+            return _patron_trino(n, k, rng)
+        if tipo == "celda":
+            return _patron_celda(n, k, rng, ternario)
+        if tipo == "jumptrill":
+            return _patron_jumptrill(n, k, rng, self.p.acorde_max)
+        if tipo == "brackets":
+            return _patron_brackets(n, k, rng)
+        if tipo == "chordjack":
+            return _patron_chordjack(n, k, rng)
+        if tipo == "manos":
+            return _patron_manos(n, k, rng, frase)
+        return _patron_melodia(n, k, rng, frase, self.p.jack_min)
 
-        # Motivo rítmico según el intervalo con el evento anterior.
-        if self.historial:
-            t_previo, previas = self.historial[-1]
-            dt = t - t_previo
-            previa = float(np.mean(previas))
+    def _patron_para(self, frase):
+        n = len(frase)
+        dt = intervalo_minimo(frase)
+        unidad = self.a.periodo / _UNIDADES_PULSO
+        firma = (frase[0].posicion,) + tuple(round((b.tiempo - a.tiempo) / unidad)
+                                             for a, b in zip(frase, frase[1:]))
+        if firma in self.memoria:
+            tipo, semilla, veces = self.memoria[firma]
+            self.memoria[firma] = (tipo, semilla, veces + 1)
+            columnas = self._generar_patron(tipo, frase, np.random.default_rng(semilla))
+            return tipo, (_espejo(columnas, self.k) if veces % 2 else columnas)
+        if n < 3:
+            tipo = "suelta"
         else:
-            dt, previa = 10.0, (k - 1) / 2
-        paso = a.periodo
-        if dt <= paso / 3 + 1e-3:
-            repetida = abs(altura - a.valor(a.altura, t - dt + 0.03)) < 0.5
-            if repetida and confianza > 0.3:
-                ultimo = int(round(previa))
-                pos_ritmo = self.trino[1] if ultimo == self.trino[0] else self.trino[0]
-            else:
-                pos_ritmo = previa + self.direccion
-                if pos_ritmo < 0 or pos_ritmo > k - 1:
-                    self.direccion *= -1
-                    pos_ritmo = previa + self.direccion
-            peso_ritmo_extra = 1.0
-        elif dt <= paso / 2 + 1e-3:
-            pos_ritmo = (k - 1) - previa  # alternar manos
-            peso_ritmo_extra = 0.7
-        else:
-            pos_ritmo = (k - 1) / 2 + self.rng.uniform(-1, 1) * (k - 1) / 2
-            peso_ritmo_extra = 0.3
+            pesos = self._pesos_patrones(frase, dt)
+            tipos = list(pesos)
+            valores = np.array([pesos[t] for t in tipos])
+            tipo = tipos[int(self.rng.choice(len(tipos), p=valores / valores.sum()))]
+        semilla = int(self.rng.integers(1 << 30))
+        columnas = self._generar_patron("melodia" if tipo == "suelta" else tipo, frase,
+                                        np.random.default_rng(semilla))
+        # Se elige la orientación que mejor empalma con lo anterior.
+        candidatas = [columnas, _espejo(columnas, self.k)]
+        espejo = int(np.argmin([self._conflictos(frase, c) for c in candidatas]))
+        if n >= 3:
+            self.memoria[firma] = (tipo, semilla, espejo)
+        return tipo, candidatas[espejo]
 
-        # Banda dominante: graves a la izquierda, agudos a la derecha.
-        total = punto.bajo + punto.alto + 1e-6
-        pos_banda = (punto.alto / total) * (k - 1)
+    def _conflictos(self, frase, columnas):
+        total = 0
+        for e, cols in zip(frase[:4], columnas[:4]):
+            total += sum(not self._libre(c, e.tiempo) for c in cols)
+        return total
 
-        w_mel, w_rit, w_ban = _PESOS_ESTILO[self.o.estilo]
-        pesos = np.array([w_mel * confianza, w_rit * peso_ritmo_extra, w_ban])
-        # Se sortea una fuente en vez de promediarlas: el promedio tira todo al centro.
-        fuente = int(self.rng.choice(3, p=pesos / pesos.sum()))
-        return (pos_melodia, pos_ritmo, pos_banda)[fuente]
+    # -- estado de columnas --------------------------------------------------
+    def _libre(self, c, t):
+        return (self.fin_hold[c] <= t - self.hueco_hold
+                and t - self.ultimo[c] >= self.p.jack_min - 1e-6)
 
-    # -- costos -------------------------------------------------------------
-    def _costo_columna(self, c: int, t: float, preferida: float, peso_distancia: float) -> float:
-        if self.fin_hold[c] > t - self.hueco_hold:
-            return 1000.0
-        costo = abs(c - preferida) * peso_distancia
+    def _costo_extra(self, c, t, cerca_de):
+        costo = abs(c - cerca_de) * 0.6 if cerca_de is not None else 0.0
         dt = t - self.ultimo[c]
-        jack = self.p.jack_min
-        if dt < jack:
-            return 100.0 + costo
-        if dt < jack * 1.8:
-            costo += 2.0 * (1 - (dt - jack) / (0.8 * jack))
-        if self.historial:
-            t_previo, previas = self.historial[-1]
-            if c in previas and t - t_previo < 2 * self.a.periodo:
-                costo += 1.2
-        recientes = [col for _, cols in self.historial[-6:] for col in cols]
-        costo += 0.4 * recientes.count(c)
-        izquierda = sum(1 for col in recientes if col < (self.k - 1) / 2)
-        derecha = sum(1 for col in recientes if col > (self.k - 1) / 2)
-        if (c < (self.k - 1) / 2 and izquierda > derecha) or (c > (self.k - 1) / 2 and derecha > izquierda):
-            costo += 0.15 * abs(izquierda - derecha)
+        if dt < self.p.jack_min * 1.8:
+            costo += 1.5
         if self.total_notas > 16:
-            exceso = self.uso[c] / self.total_notas - 1.0 / self.k
-            costo += max(0.0, exceso) * self.k * 2.0
+            costo += max(0.0, self.uso[c] / self.total_notas - 1.0 / self.k) * self.k * 2.0
         if self.k == 7 and c == 3 and self.p.nombre in ("Easy", "Normal"):
             costo += 0.5
-        return costo + self.rng.uniform(0, 0.35)
+        return costo + self.rng.uniform(0, 0.3)
 
-    def _tamano_acorde(self, punto: _Punto, previo: float | None) -> int:
+    def _tamano_acorde(self, evento, rapido):
         p = self.p
-        if p.acorde_max <= 1 or punto.nivel > 1 or punto.golpe < 0.55:
+        if p.acorde_max <= 1 or evento.nivel > (2 if p.nombre == "Insane" else 1):
             return 1
-        intensidad = self.a.valor(self.a.intensidad, punto.tiempo)
-        seccion = self.a.seccion_en(punto.tiempo)
-        probabilidad = p.prob_acorde * (0.5 + intensidad)
-        if seccion is not None and seccion.kiai:
-            probabilidad *= 1.3
-        if punto.bajo > punto.alto:
-            probabilidad *= 1.4
-        tamano = 1
-        while tamano < p.acorde_max and self.rng.random() < probabilidad:
-            tamano += 1
-            probabilidad *= 0.55
-        if previo is not None and punto.tiempo - previo < p.jack_min * 1.2:
-            tamano = min(tamano, 2)
-        return tamano
+        fuerza = max(evento.bajo, 0.85 * evento.medio)
+        umbral = {"Easy": 0.8, "Normal": 0.65, "Hard": 0.55, "Insane": 0.5}[p.nombre]
+        if fuerza < umbral:
+            return 1
+        seccion = self.a.seccion_en(evento.tiempo)
+        intensidad = seccion.intensidad if seccion is not None else 0.5
+        extra = (p.acorde_max - 1) * min(1.0, (fuerza - umbral) / (1 - umbral + 1e-6) + 0.3)
+        extra *= 0.5 + p.prob_acorde + 0.4 * intensidad + (0.2 if seccion is not None and seccion.kiai else 0)
+        tamano = 1 + max(1, int(round(extra)))
+        if rapido:
+            tamano = min(tamano, 2 if self.k == 4 or p.nombre != "Insane" else 3)
+        return min(tamano, p.acorde_max)
 
-    def _elegir_columnas(self, t: float, preferida: float, tamano: int):
-        if tamano == 1:
-            costos = [self._costo_columna(c, t, preferida, 1.0) for c in range(self.k)]
-            c = int(np.argmin(costos))
-            return ((c,), costos[c]) if costos[c] < 100 else ((), None)
-        individuales = [self._costo_columna(c, t, preferida, 0.5) for c in range(self.k)]
-        libres = [c for c in range(self.k) if individuales[c] < 100]
-        if len(libres) < tamano:
-            return self._elegir_columnas(t, preferida, max(1, len(libres))) if libres else ((), None)
-        previas = set(self.historial[-1][1]) if self.historial else set()
-        mejor, mejor_costo = None, None
-        for combo in combinations(libres, tamano):
-            costo = sum(individuales[c] for c in combo)
-            costo += abs(np.mean(combo) - preferida) * 0.5
-            if set(combo) == previas:
-                costo += 1.5
-            if mejor_costo is None or costo < mejor_costo:
-                mejor, mejor_costo = combo, costo
-        return mejor, mejor_costo
+    def _colocar(self, evento, deseadas, tamano):
+        t = evento.tiempo
+        colocadas = []
+        for c in deseadas:
+            if self._libre(c, t) and c not in colocadas:
+                colocadas.append(c)
+                continue
+            libres = [x for x in range(self.k) if self._libre(x, t) and x not in colocadas]
+            if libres:
+                colocadas.append(min(libres, key=lambda x: self._costo_extra(x, t, c)))
+        if colocadas and len(colocadas) < tamano:
+            izquierda, _ = _manos(self.k)
+            ancla = colocadas[0]
+            libres = [x for x in range(self.k) if self._libre(x, t) and x not in colocadas]
+            # El acorde se reparte entre ambas manos.
+            libres.sort(key=lambda x: self._costo_extra(x, t, None)
+                        - (0.8 if (x in izquierda) != (ancla in izquierda) else 0.0))
+            colocadas.extend(libres[: tamano - len(colocadas)])
+        return tuple(sorted(colocadas))
 
+    # -- holds ---------------------------------------------------------------
     def _liberar_holds(self, t: float):
         for c, nota in list(self.holds_activos.items()):
             if nota.fin <= t:
                 del self.holds_activos[c]
-
-    def _recortar_hold(self, t: float) -> bool:
-        """Si todas las columnas están ocupadas, acorta el hold que termina antes."""
-        if not self.holds_activos:
-            return False
-        c, nota = min(self.holds_activos.items(), key=lambda par: par[1].fin)
-        nuevo_fin = t - max(self.hueco_hold, self.paso_hold)
-        if nuevo_fin - nota.tiempo < 0.5 * self.a.periodo:
-            nota.fin = None
-        else:
-            nota.fin = nuevo_fin
-        self.fin_hold[c] = nota.fin if nota.fin is not None else nota.tiempo
-        del self.holds_activos[c]
-        return True
 
     def _quizas_hold(self, nota: Nota, siguiente: float | None):
         p, a = self.p, self.a
@@ -410,28 +617,50 @@ class _Asignador:
         self.fin_hold[nota.columna] = fin
         self.holds_activos[nota.columna] = nota
 
+    def _recortar_hold(self, t: float) -> bool:
+        """Si todas las columnas están ocupadas, acorta el hold que termina antes."""
+        if not self.holds_activos:
+            return False
+        c, nota = min(self.holds_activos.items(), key=lambda par: par[1].fin)
+        nuevo_fin = t - max(self.hueco_hold, self.paso_hold)
+        nota.fin = nuevo_fin if nuevo_fin - nota.tiempo >= 0.5 * self.a.periodo else None
+        self.fin_hold[c] = nota.fin if nota.fin is not None else nota.tiempo
+        del self.holds_activos[c]
+        return True
+
+    # -- recorrido -----------------------------------------------------------
     def asignar(self, eventos: list) -> list:
-        previo = None
-        for indice, punto in enumerate(eventos):
-            t = punto.tiempo
-            self._liberar_holds(t)
-            preferida = self._preferencia(punto)
-            tamano = self._tamano_acorde(punto, previo)
-            columnas, _ = self._elegir_columnas(t, preferida, tamano)
-            if not columnas and self._recortar_hold(t):
-                columnas, _ = self._elegir_columnas(t, preferida, 1)
-            if not columnas:
-                continue
-            nuevas = [Nota(t, c) for c in columnas]
-            for nota in nuevas:
-                self.ultimo[nota.columna] = t
-                self.uso[nota.columna] += 1
-            self.total_notas += len(nuevas)
-            self.notas.extend(nuevas)
-            self.historial.append((t, tuple(columnas)))
-            siguiente = eventos[indice + 1].tiempo if indice + 1 < len(eventos) else None
-            self._quizas_hold(nuevas[int(self.rng.integers(len(nuevas)))], siguiente)
-            previo = t
+        frases = agrupar_frases(eventos, self.a.periodo)
+        for indice_frase, frase in enumerate(frases):
+            tipo, columnas = self._patron_para(frase)
+            self.frases.append((tipo, len(frase)))
+            dt = intervalo_minimo(frase) or self.a.periodo
+            rapido = dt <= self.a.periodo / 3 + 1e-3
+            con_acordes = tipo not in ("jumptrill", "brackets", "chordjack")
+            for i, (evento, deseadas) in enumerate(zip(frase, columnas)):
+                t = evento.tiempo
+                self._liberar_holds(t)
+                tamano = max(len(deseadas), self._tamano_acorde(evento, rapido) if con_acordes else 1)
+                colocadas = self._colocar(evento, deseadas, tamano)
+                if not colocadas and self._recortar_hold(t):
+                    colocadas = self._colocar(evento, deseadas[:1], 1)
+                if not colocadas:
+                    continue
+                nuevas = [Nota(t, c) for c in colocadas]
+                for nota in nuevas:
+                    self.ultimo[nota.columna] = t
+                    self.uso[nota.columna] += 1
+                self.total_notas += len(nuevas)
+                self.notas.extend(nuevas)
+                if i + 1 < len(frase):
+                    siguiente = frase[i + 1].tiempo
+                elif indice_frase + 1 < len(frases):
+                    siguiente = frases[indice_frase + 1][0].tiempo
+                else:
+                    siguiente = None
+                # Los holds van donde hay aire: final de frase o frases lentas.
+                if i == len(frase) - 1 or not rapido:
+                    self._quizas_hold(nuevas[int(self.rng.integers(len(nuevas)))], siguiente)
         return self.notas
 
 
@@ -441,11 +670,12 @@ class _Asignador:
 
 def generar_mapa(analisis: Analisis, opciones: OpcionesGeneracion) -> Mapa:
     perfil = obtener_perfil(opciones.dificultad, opciones.teclas)
-    puntos = construir_rejilla(analisis, perfil)
-    puntuar(analisis, puntos, perfil, opciones.estilo)
-    eventos = seleccionar_eventos(analisis, puntos, perfil, opciones.densidad)
-    notas = _Asignador(analisis, opciones, perfil).asignar(eventos)
+    eventos = construir_eventos(analisis, perfil, opciones.estilo)
+    eventos = seleccionar_eventos(analisis, eventos, perfil, opciones.densidad)
+    asignador = _Asignador(analisis, opciones, perfil)
+    notas = asignador.asignar(eventos)
     notas = [n for n in notas if 0 <= n.tiempo < analisis.duracion]
     notas.sort(key=lambda n: (n.tiempo, n.columna))
     divisor = 4 if perfil.divisor >= 4 else 2
-    return Mapa(opciones.teclas, opciones.dificultad, perfil, notas, divisor_editor=divisor)
+    return Mapa(opciones.teclas, opciones.dificultad, perfil, notas, divisor_editor=divisor,
+                frases=asignador.frases)

@@ -55,6 +55,12 @@ def validar(mapa: Mapa, duracion: float | None = None) -> dict:
 
     estadisticas = estadisticas_mapa(mapa)
     estadisticas["acordes"] = {str(t): v for t, v in sorted(acordes.items())}
+    patrones: dict[str, int] = {}
+    for tipo, cantidad in mapa.frases:
+        patrones[tipo] = patrones.get(tipo, 0) + cantidad
+    estadisticas["patrones"] = dict(sorted(patrones.items(), key=lambda par: -par[1]))
+    largas = [cantidad for tipo, cantidad in mapa.frases if tipo != "suelta"]
+    estadisticas["largo_frase"] = round(float(np.mean(largas)), 1) if largas else 0.0
     if not notas:
         errores.append("El mapa no tiene notas.")
     elif estadisticas["notas"] < 20:

@@ -71,3 +71,88 @@ def clics(tiempos, segundos, sr=SR):
         a = int(t * sr)
         senal[a:a + k.size] += k[: senal.size - a]
     return senal.astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Canción "realista" con ritmo conocido (para medir la calidad rítmica)
+# ---------------------------------------------------------------------------
+
+def caja(sr=SR, dur=0.15, semilla=2):
+    rng = np.random.default_rng(semilla)
+    t = np.arange(int(sr * dur)) / sr
+    cuerpo = np.sin(2 * np.pi * 190 * t) * np.exp(-t * 30)
+    ruido = rng.standard_normal(t.size) * np.exp(-t * 22)
+    return _desvanecer(0.5 * cuerpo + 0.45 * ruido)
+
+
+def pad(midis, dur, sr=SR):
+    t = np.arange(int(sr * dur)) / sr
+    onda = sum(np.sin(2 * np.pi * 440.0 * 2 ** ((m - 69) / 12) * t) for m in midis)
+    envolvente = np.minimum(1, t / 0.4) * np.minimum(1, (dur - t) / 0.3)
+    return _desvanecer(0.08 * onda * envolvente)
+
+
+# Patrones de 16 semicorcheas por compás.
+_SECCIONES = [
+    # nombre, compases, bombo, caja, platillo, melodía (paso, nota relativa, duración en pasos)
+    ("intro", 4, [], [], [0, 4, 8, 12], []),
+    ("verso", 8, [0, 7, 10], [4, 12], list(range(0, 16, 2)),
+     [(0, 0, 3), (3, 2, 3), (6, 4, 2), (8, 5, 4), (12, 4, 2), (14, 2, 2)]),
+    ("coro", 8, [0, 3, 8, 11], [4, 12], list(range(16)),
+     [(0, 7, 2), (2, 5, 2), (4, 4, 2), (6, 2, 2), (8, 0, 1), (9, 2, 1), (10, 4, 1), (11, 5, 1),
+      (12, 7, 1), (13, 9, 1), (14, 11, 1), (15, 12, 1)]),
+    ("puente", 4, [0], [], [], [(0, 0, 8), (8, 4, 8)]),
+    ("coro", 8, [0, 3, 8, 11], [4, 12], list(range(16)),
+     [(0, 7, 2), (2, 5, 2), (4, 4, 2), (6, 2, 2), (8, 0, 1), (9, 2, 1), (10, 4, 1), (11, 5, 1),
+      (12, 7, 1), (13, 9, 1), (14, 11, 1), (15, 12, 1)]),
+]
+
+
+def cancion_realista(bpm=170.0, offset=0.6, sr=SR, humano=0.0, semilla=5):
+    """Devuelve (señal, eventos). `eventos` es una lista (tiempo, instrumento, sección, paso).
+
+    `humano` (s) desplaza al azar cada golpe y agrega reverberación y ruido de fondo,
+    para parecerse más a una grabación real.
+    """
+    rng = np.random.default_rng(semilla)
+    paso = 60.0 / bpm / 4
+    compases = sum(s[1] for s in _SECCIONES)
+    n = int((offset + compases * 16 * paso + 1.0) * sr)
+    senal = np.zeros(n)
+    eventos = []
+    k, s, p = bombo(sr), caja(sr), platillo(sr)
+    t_compas = offset
+    for nombre, cantidad, bombos, cajas, platillos, melodia in _SECCIONES:
+        fuerte = 1.0 if nombre == "coro" else 0.75
+        for _ in range(cantidad):
+            senal_pad = pad([48, 55, 64], 16 * paso, sr)
+            a = int(t_compas * sr)
+            senal[a:a + senal_pad.size] += senal_pad
+            for paso_i in range(16):
+                t = t_compas + paso_i * paso + (rng.normal(0, humano) if humano else 0.0)
+                a = int(t * sr)
+                if paso_i in bombos:
+                    senal[a:a + k.size] += fuerte * k
+                    eventos.append((t, "bombo", nombre, paso_i))
+                if paso_i in cajas:
+                    senal[a:a + s.size] += fuerte * 0.8 * s
+                    eventos.append((t, "caja", nombre, paso_i))
+                if paso_i in platillos:
+                    senal[a:a + p.size] += 0.5 * p
+                    eventos.append((t, "platillo", nombre, paso_i))
+            for paso_i, nota, duracion in melodia:
+                t = t_compas + paso_i * paso + (rng.normal(0, humano) if humano else 0.0)
+                a = int(t * sr)
+                sonido = tono(67 + nota, duracion * paso * 1.6, sr)
+                senal[a:a + sonido.size] += 0.9 * sonido
+                eventos.append((t, "melodia", nombre, paso_i))
+            t_compas += 16 * paso
+    if humano:
+        from scipy.signal import fftconvolve
+        t = np.arange(int(0.8 * sr)) / sr
+        respuesta = rng.standard_normal(t.size) * np.exp(-t * 6) * 0.03
+        respuesta[0] = 1.0
+        senal = fftconvolve(senal, respuesta)[:n]
+        senal += rng.standard_normal(n) * 0.01 * np.abs(senal).max()
+    senal = senal / np.abs(senal).max()
+    return senal.astype(np.float32), sorted(eventos)

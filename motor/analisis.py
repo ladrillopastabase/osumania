@@ -258,6 +258,27 @@ def detectar_onsets(env: np.ndarray, hop_s: float, delta: float = 0.06):
     return tiempos, env[elegidos] if elegidos.size else np.zeros(0)
 
 
+def detectar_onsets_por_banda(env, bandas, hop_s, union: float = 0.025):
+    """Une los onsets de la envolvente total con los de cada banda.
+
+    Un platillo suave entre bombo y caja casi no se nota en la envolvente total,
+    pero sí en la de agudos. Los onsets a menos de `union` s se funden en uno.
+    """
+    tiempos = [detectar_onsets(env, hop_s)[0]]
+    for banda in bandas:
+        tiempos.append(detectar_onsets(banda, hop_s, delta=0.08)[0])
+    todos = np.sort(np.concatenate(tiempos))
+    unidos = []
+    for t in todos:
+        if unidos and t - unidos[-1] < union:
+            continue
+        unidos.append(t)
+    unidos = np.asarray(unidos)
+    indices = np.clip(np.rint((unidos - CORRECCION_ONSET) / hop_s).astype(int), 0, env.size - 1)
+    fuerzas = np.maximum.reduce([env[indices]] + [b[indices] for b in bandas])
+    return unidos, fuerzas
+
+
 def _autocorrelacion(x: np.ndarray) -> np.ndarray:
     n = 1 << int(np.ceil(np.log2(2 * x.size)))
     espectro = np.fft.rfft(x, n)
@@ -454,7 +475,7 @@ def analizar(senal: np.ndarray, sr: int, bpm: float | None = None,
     # Cada banda pesa lo mismo: si no, los agudos (muchas bandas mel) dominan.
     env = _normalizar((env_bajo + env_medio + env_alto) / 3.0)
 
-    onsets, fuerzas = detectar_onsets(env, hop_s)
+    onsets, fuerzas = detectar_onsets_por_banda(env, (env_bajo, env_medio, env_alto), hop_s)
     # Los graves (bombo) marcan el pulso con más fiabilidad que los platillos.
     env_pulso = _normalizar(env + 1.5 * env_bajo)
 

@@ -168,6 +168,7 @@ function mostrarResultados(json) {
         <li>${e.notas} notas · ${e.holds} holds</li>
         <li>${e.nps_medio} NPS medio · ${e.nps_max} NPS máx.</li>
         <li>Acordes: ${Object.entries(e.acordes).map(([t, n]) => `${t}→${n}`).join(", ")}</li>
+        <li>Patrones (${e.largo_frase} notas por frase): ${Object.entries(e.patrones || {}).slice(0, 4).map(([t, n]) => `${t} ${n}`).join(", ")}</li>
         ${errores}${avisos}
       </ul>
       <span class="${v.valido ? "valido" : "invalido"}">${v.valido ? "✔ Mapa válido" : "✖ Con errores"}</span>

@@ -23,7 +23,9 @@ python -m motor.cli "Artista - Tema.mp3" --teclas 4 7 --dificultades Hard Insane
     --estilo hibrido --artista "Artista" --salida salida/
 ```
 
-Pruebas: `python -m pytest -q`.
+Pruebas: `python -m pytest -q`. Incluyen una canción sintética con ritmo conocido
+(`tests/sintetico.py`) que verifica que no haya notas fantasma, que se cubran los golpes
+principales, que los patrones duren y que los compases repetidos tengan el mismo ritmo.
 
 ## Arquitectura
 
@@ -61,23 +63,31 @@ Todo con numpy/scipy, procesando el espectrograma por bloques.
 
 ### Motor de generación híbrida (`motor/generador.py`)
 
-1. **Rejilla**: cada pulso se divide en 1/2 (Easy, Normal) o 1/4 (Hard, Insane); en
-   Hard/Insane se usa 1/3 donde los onsets calzan mejor con tresillos.
-2. **Selección de eventos**: cada punto se puntúa con golpe + cambio melódico + peso
-   métrico (tiempo fuerte > pulso > medio pulso). Por compás se toman tantos eventos como
-   pida la densidad objetivo, que depende de la dificultad, la intensidad local y la
-   sección; se respeta una separación mínima.
-3. **Asignación de columnas**: cada evento sortea una posición preferida entre tres
-   fuentes —contorno melódico, motivo rítmico activo (escaleras en ráfagas, trinos en
-   notas repetidas, alternancia de manos en corcheas) y banda dominante (graves a la
-   izquierda, agudos a la derecha)— y elige la columna o el acorde de menor costo. El costo
-   penaliza jacks más rápidos que el mínimo de la dificultad, anclas, holds activos,
-   desequilibrio entre manos y columnas sobreusadas.
-4. **Acordes y holds**: los golpes fuertes en tiempos (sobre todo con bombo y en el
-   clímax) pueden volverse acordes hasta el máximo de la dificultad; las notas sostenidas
-   se alargan hasta la rejilla, con un límite de holds simultáneos.
+1. **Eventos**: los onsets (detectados en la envolvente total y en cada banda, para no perder
+   platillos tapados por el bombo) se ajustan a la rejilla de la dificultad: 1/1 y 1/2 en
+   Easy/Normal, 1/4 o 1/3 (donde hay tresillos) en Hard/Insane. Un golpe que no cae cerca de
+   un punto permitido se descarta: **nunca se mueve un golpe ni se ponen notas donde no suena
+   nada**.
+2. **Selección por sección**: cada evento tiene una saliencia según qué suena (bombo, caja,
+   platillos, cambio de melodía). En cada sección se toman los más salientes hasta la
+   densidad objetivo, con un umbral común: así todos los compases siguen las mismas capas de
+   la música. Después se regulariza: lo que se repite en los compases vecinos entra y lo
+   aislado y débil sale. Un piso global evita rellenar partes casi vacías con eco o ruido.
+3. **Frases**: los eventos se agrupan en frases de velocidad parecida (una ráfaga de 1/4 con
+   un hueco o un ritmo 3-3-2 siguen siendo la misma frase), de hasta ~16 eventos.
+4. **Patrones por frase**: cada frase recibe un patrón completo que dura toda la frase —
+   escalera, trino, celda repetida (p. ej. `0213`), jumptrill, brackets (7K), chordjack
+   (Insane), manos alternas o contorno melódico— elegido según la velocidad, la dificultad,
+   la intensidad y si la melodía se mueve. Cuando el mismo ritmo vuelve (el coro se repite),
+   se repite el mismo patrón, alternando con su espejo, como hacen los mapeadores.
+5. **Jugabilidad, acordes y holds**: si una nota del patrón cae en una columna ocupada (jack
+   más rápido que el mínimo de la dificultad o hold activo) se mueve a la libre más cercana.
+   Los golpes fuertes en tiempo (bombo, caja) se vuelven acordes, repartidos entre ambas
+   manos, por lo que caen siempre en los mismos lugares del compás. Las notas sostenidas se
+   vuelven holds al final de las frases o en pasajes lentos.
 
-Es determinista: la misma semilla produce el mismo mapa; otra semilla cambia los
+La interfaz muestra, por mapa, qué patrones se usaron y cuántas notas dura una frase en
+promedio. Es determinista: la misma semilla produce el mismo mapa; otra semilla cambia los
 patrones manteniendo el ritmo.
 
 | Dificultad | Rejilla | NPS base 4K / 7K | Acorde máx. 4K / 7K | Jack mínimo | OD |
