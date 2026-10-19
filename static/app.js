@@ -262,7 +262,7 @@ function dibujarCampo() {
   const [ctx, ancho, alto] = ajustarCanvas(campo);
   const k = estado.mapa.teclas;
   const ahora = reproductor.currentTime * 1000;
-  const velocidad = Number($("velocidad").value) / 10; // píxeles por ms × 10
+  const velocidad = Number($("velocidad").value) / 40; // píxeles por ms
   const lineaJuicio = alto - 60;
   const anchoColumna = Math.min(70, (ancho - 20) / k);
   const izquierda = (ancho - anchoColumna * k) / 2;
