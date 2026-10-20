@@ -108,21 +108,32 @@ _SECCIONES = [
 ]
 
 
-def cancion_realista(bpm=170.0, offset=0.6, sr=SR, humano=0.0, semilla=5):
+# Coro "sostenido": bombo en negras, melodía en notas largas y casi sin platillos.
+SECCIONES_SOSTENIDAS = [
+    ("intro", 4, [], [], [0, 8], []),
+    ("verso", 8, [0, 7, 10], [4, 12], list(range(0, 16, 2)),
+     [(0, 0, 3), (3, 2, 3), (6, 4, 2), (8, 5, 4), (12, 4, 2), (14, 2, 2)]),
+    ("coro", 8, [0, 4, 8, 12], [], [], [(0, 12, 8), (8, 11, 4), (12, 9, 4)]),
+    ("verso", 4, [0, 7, 10], [4, 12], list(range(0, 16, 2)), [(0, 0, 3), (3, 2, 3), (6, 4, 2)]),
+]
+
+
+def cancion_realista(bpm=170.0, offset=0.6, sr=SR, humano=0.0, semilla=5, secciones=None):
     """Devuelve (señal, eventos). `eventos` es una lista (tiempo, instrumento, sección, paso).
 
     `humano` (s) desplaza al azar cada golpe y agrega reverberación y ruido de fondo,
     para parecerse más a una grabación real.
     """
     rng = np.random.default_rng(semilla)
+    secciones = secciones or _SECCIONES
     paso = 60.0 / bpm / 4
-    compases = sum(s[1] for s in _SECCIONES)
+    compases = sum(s[1] for s in secciones)
     n = int((offset + compases * 16 * paso + 1.0) * sr)
     senal = np.zeros(n)
     eventos = []
     k, s, p = bombo(sr), caja(sr), platillo(sr)
     t_compas = offset
-    for nombre, cantidad, bombos, cajas, platillos, melodia in _SECCIONES:
+    for nombre, cantidad, bombos, cajas, platillos, melodia in secciones:
         fuerte = 1.0 if nombre == "coro" else 0.75
         for _ in range(cantidad):
             senal_pad = pad([48, 55, 64], 16 * paso, sr)

@@ -101,21 +101,32 @@ registro. La interfaz muestra la actividad de cada capa a lo largo de la canció
    densidad objetivo, con un umbral común: así todos los compases siguen las mismas capas de
    la música. Después se regulariza: lo que se repite en los compases vecinos entra y lo
    aislado y débil sale. Un piso global evita rellenar partes casi vacías con eco o ruido.
-3. **Frases**: los eventos se agrupan en frases de velocidad parecida (una ráfaga de 1/4 con
+3. **Relleno de huecos**: si la música suena y entre dos eventos queda un espacio mayor al
+   máximo de la dificultad (4 pulsos en Easy, 2 en Normal, 1,5 en Hard, 1 en Insane; la mitad
+   en el clímax y el doble en partes tranquilas), se rellena en este orden: un **hold** si el
+   sonido del evento anterior se sostiene; los golpes reales más fuertes que habían quedado
+   fuera; y, si la música está fuerte y aun así no hay golpes, notas en los pulsos. El clímax
+   además pide más densidad y acepta golpes más suaves, para que no se pierda.
+4. **Frases**: los eventos se agrupan en frases de velocidad parecida (una ráfaga de 1/4 con
    un hueco o un ritmo 3-3-2 siguen siendo la misma frase), de hasta ~16 eventos.
-4. **Patrones por frase**: cada frase recibe un patrón completo que dura toda la frase —
+5. **Patrones por frase**: cada frase recibe un patrón completo que dura toda la frase —
    escalera, trino, celda repetida (p. ej. `0213`), jumptrill, brackets (7K), chordjack
    (Insane), manos alternas o contorno melódico— elegido según la velocidad, la dificultad,
    la intensidad y qué capa lleva la frase: si la llevan la melodía o la voz, las notas dibujan
    su contorno; si la lleva la batería, se usan patrones rítmicos. Los patrones de acordes
    (jumptrill, brackets, chordjack) solo aparecen si la percusión tiene peso. Cuando el mismo ritmo vuelve (el coro se repite),
    se repite el mismo patrón, alternando con su espejo, como hacen los mapeadores.
-5. **Jugabilidad, acordes y holds**: si una nota del patrón cae en una columna ocupada (jack
+6. **Jugabilidad, acordes y holds**: si una nota del patrón cae en una columna ocupada (jack
    más rápido que el mínimo de la dificultad o hold activo) se mueve a la libre más cercana.
    Los golpes fuertes de bombo y caja en tiempo se vuelven acordes, repartidos entre ambas
    manos y en proporción al peso de la percusión, por lo que caen siempre en los mismos
-   lugares del compás. Las notas sostenidas se
-   vuelven holds al final de las frases o en pasajes lentos.
+   lugares del compás.
+7. **Holds**: una nota se vuelve hold cuando su sonido se sostiene (voz o sintetizador
+   largo), con más probabilidad si es melódica o si después hay aire. Se suelta en un punto
+   musical: justo cuando empieza otra nota (el gesto típico de un LN) o, si no hay ninguna
+   cerca, en el tiempo más fuerte antes de que se apague el sonido. El control de holds va de
+   0× (ninguno) a 1× (holds en sonidos sostenidos) y hasta 2,5× (estilo LN: también se
+   alargan notas cortas mientras la otra mano sigue tocando).
 
 La interfaz muestra, por mapa, qué patrones se usaron y cuántas notas dura una frase en
 promedio. Es determinista: la misma semilla produce el mismo mapa; otra semilla cambia los
@@ -141,9 +152,16 @@ patrones manteniendo el ritmo.
 - **Imagen de fondo** (opcional): si no se sube una, se usa la miniatura del video de
   YouTube o la carátula incrustada en el MP3/FLAC. Se guarda como JPG de hasta 1920 px y
   se ve también detrás de la previsualización.
-- **Densidad** (0.5×–1.8×) y **cantidad de holds** (0×–2.5×).
+- **Densidad** (0.5×–1.8×) y **holds** (0×–2.5×; sobre 1× es estilo LN).
 - **Avanzado**: BPM y offset manuales (útil si el BPM detectado sale a la mitad o al doble)
   y semilla.
+
+**Regenerar sin volver a descargar**: la primera vez la canción se sube o descarga y se
+analiza (`POST /api/trabajos`). Después, el formulario muestra la canción cargada y cada
+*Regenerar* (`POST /api/trabajos/<id>/generar`) usa el análisis guardado: se pueden cambiar
+título, artista, creador, imagen de fondo y todos los parámetros sin descargar ni analizar de
+nuevo. Solo si se cambia el BPM o el offset manual se vuelve a analizar el audio ya guardado.
+La vista previa conserva la dificultad y la posición que se estaban mirando.
 
 ### Exportador (`motor/exportador.py`)
 

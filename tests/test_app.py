@@ -54,3 +54,45 @@ def test_rechaza_formato(cliente):
 
 def test_trabajo_inexistente(cliente):
     assert cliente.get("/api/trabajos/no-existe/osz").status_code == 404
+
+
+def test_regenerar_sin_volver_a_descargar(cliente, monkeypatch):
+    creado = cliente.post("/api/trabajos", data={"audio": (_wav(), "Banda - Tema.wav")},
+                          content_type="multipart/form-data")
+    assert creado.status_code == 200, creado.get_json()
+    trabajo = creado.get_json()
+    assert trabajo["metadatos"]["titulo"] == "Banda - Tema"
+    assert trabajo["analisis"]["bpm"] == pytest.approx(140, abs=0.05)
+
+    # A partir de aquí no se debe volver a leer ni analizar el audio.
+    def prohibido(*_args, **_kwargs):
+        raise AssertionError("se volvió a analizar")
+    monkeypatch.setattr(aplicacion, "analizar", prohibido)
+
+    url = f"/api/trabajos/{trabajo['id']}/generar"
+    primero = cliente.post(url, data={"teclas": "4", "dificultades": "Hard", "titulo": "Tema",
+                                      "artista": "Banda", "percusion": "1", "melodia": "0"})
+    assert primero.status_code == 200, primero.get_json()
+    segundo = cliente.post(url, data={"teclas": "4,7", "dificultades": "Hard", "titulo": "Otro nombre",
+                                      "artista": "Otra banda", "percusion": "0", "melodia": "1"})
+    datos = segundo.get_json()
+    assert [m["version"] for m in datos["mapas"]] == ["4K Hard", "7K Hard"]
+    assert datos["metadatos"] == {"titulo": "Otro nombre", "artista": "Otra banda"}
+    osu = cliente.get(f"/api/trabajos/{trabajo['id']}/osu/0").data.decode()
+    assert "Title:Otro nombre" in osu and "Artist:Otra banda" in osu
+    assert primero.get_json()["mapas"][0]["notas"] != datos["mapas"][0]["notas"]
+    with zipfile.ZipFile(io.BytesIO(cliente.get(datos["osz"]).data)) as zf:
+        assert sum(n.endswith(".osu") for n in zf.namelist()) == 2
+
+
+def test_regenerar_con_bpm_forzado_reanaliza(cliente):
+    creado = cliente.post("/api/trabajos", data={"audio": (_wav(), "x.wav")},
+                          content_type="multipart/form-data").get_json()
+    datos = cliente.post(f"/api/trabajos/{creado['id']}/generar",
+                         data={"teclas": "4", "dificultades": "Easy", "bpm": "70"}).get_json()
+    assert datos["analisis"]["bpm"] == 70
+
+
+def test_regenerar_trabajo_inexistente(cliente):
+    import uuid
+    assert cliente.post(f"/api/trabajos/{uuid.uuid4()}/generar").status_code == 404

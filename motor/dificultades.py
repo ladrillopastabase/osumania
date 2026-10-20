@@ -23,8 +23,8 @@ class PerfilDificultad:
 _BASE = {
     "Easy": PerfilDificultad("Easy", 2, False, 1.6, 1, 0.05, 0.30, 1.0, 0.24, 0.45, 2.0, 5.0, 6.0),
     "Normal": PerfilDificultad("Normal", 2, False, 3.0, 2, 0.15, 0.26, 1.0, 0.13, 0.28, 1.4, 6.5, 7.0),
-    "Hard": PerfilDificultad("Hard", 4, True, 5.2, 2, 0.25, 0.22, 0.75, 0.075, 0.17, 1.0, 7.5, 7.5),
-    "Insane": PerfilDificultad("Insane", 4, True, 7.8, 3, 0.35, 0.18, 0.5, 0.05, 0.11, 0.8, 8.3, 8.0),
+    "Hard": PerfilDificultad("Hard", 4, True, 5.2, 2, 0.25, 0.30, 0.75, 0.075, 0.17, 1.0, 7.5, 7.5),
+    "Insane": PerfilDificultad("Insane", 4, True, 7.8, 3, 0.35, 0.26, 0.5, 0.05, 0.11, 0.8, 8.3, 8.0),
 }
 
 # En 7K hay más columnas: más acordes y algo más de densidad por la misma dificultad.

@@ -39,7 +39,10 @@ from .dificultades import PerfilDificultad, perfil as obtener_perfil
 _PESO_CAPA = {"bombo": 1.0, "caja": 0.9, "platillos": 0.5, "melodia": 1.0, "bajo": 0.6}
 _PESO_CAMBIO_MELODICO = 0.6
 _BONO_NIVEL = {0: 0.15, 1: 0.1, 2: 0.05, 3: 0.0}
-_FACTOR_SECCION = {"tranquila": 0.6, "media": 0.9, "intensa": 1.1, "clímax": 1.25}
+_FACTOR_SECCION = {"tranquila": 0.55, "media": 0.9, "intensa": 1.15, "clímax": 1.45}
+# Hueco máximo (en pulsos) con música sonando, antes de rellenar; se escala por sección.
+_HUECO_MAXIMO = {"Easy": 4.0, "Normal": 2.0, "Hard": 1.5, "Insane": 1.0}
+_FACTOR_HUECO = {"tranquila": 2.0, "media": 1.0, "intensa": 0.75, "clímax": 0.5}
 _UNIDADES_PULSO = 12  # 1/4 = 3 unidades, 1/3 = 4 unidades
 
 
@@ -97,6 +100,8 @@ class _Evento:
     confianza: float = 0.0
     saliencia: float = 0.0
     melodico: float = 0.0  # 0 = solo percusión, 1 = solo melodía
+    relleno: bool = False   # nota en el pulso para no dejar un hueco con música sonando
+    hold_hasta: float = 0.0  # si > 0, el evento debería sostenerse hasta este tiempo
 
     def fuerza(self, capa: str) -> float:
         return self.capas.get(capa, 0.0)
@@ -242,7 +247,8 @@ def _hay_espacio(tiempos: list, t: float, separacion: float) -> bool:
 
 
 def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificultad,
-                        densidad: float) -> list:
+                        opciones: "OpcionesGeneracion") -> list:
+    densidad = opciones.densidad
     elegidos: set[int] = set()
     tiempos: list[float] = []
     umbrales: dict[int, float] = {}
@@ -267,10 +273,12 @@ def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificul
             factor = _FACTOR_SECCION[seccion.etiqueta]
             intensidad = seccion.intensidad
         objetivo = int(round(perfil.nps * densidad * factor * (0.6 + 0.8 * intensidad) * duracion))
+        # En el clímax se aceptan golpes más suaves: es donde más notas se esperan.
+        piso_seccion = piso * (0.6 if seccion is not None and seccion.kiai else 1.0)
         tomados = 0
         umbral = 1.0
         for i in sorted(miembros, key=lambda i: -eventos[i].saliencia):
-            if tomados >= objetivo or eventos[i].saliencia < piso:
+            if tomados >= objetivo or eventos[i].saliencia < piso_seccion:
                 break
             if not _hay_espacio(tiempos, eventos[i].tiempo, perfil.separacion_min):
                 continue
@@ -300,7 +308,94 @@ def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificul
         elif not any(vecinos) and e.saliencia < 1.3 * umbral and e.nivel >= 2:
             elegidos.discard(i)
             tiempos.pop(bisect_left(tiempos, e.tiempo))
-    return [eventos[i] for i in sorted(elegidos, key=lambda i: eventos[i].tiempo)]
+    seleccion = [eventos[i] for i in sorted(elegidos, key=lambda i: eventos[i].tiempo)]
+    libres = [e for i, e in enumerate(eventos) if i not in elegidos]
+    return rellenar_huecos(analisis, seleccion, libres, perfil, opciones)
+
+
+def _hueco_maximo(analisis: Analisis, perfil: PerfilDificultad, t: float) -> float:
+    seccion = analisis.seccion_en(t)
+    factor = _FACTOR_HUECO[seccion.etiqueta] if seccion is not None else 1.0
+    return _HUECO_MAXIMO[perfil.nombre] * factor * analisis.periodo
+
+
+def _evento_de_pulso(analisis: Analisis, t: float) -> _Evento:
+    pulso = analisis.indice_pulso(t)
+    compas, pulso_en_compas = divmod(pulso, analisis.compas)
+    e = _Evento(float(t), compas, pulso_en_compas * _UNIDADES_PULSO,
+                0 if pulso_en_compas == 0 else 1, relleno=True)
+    e.altura = analisis.valor(analisis.altura, t + 0.03)
+    e.confianza = analisis.maximo(analisis.confianza_melodia, t + 0.02, 0.02)
+    e.melodico = 1.0 if e.confianza > 0.3 else 0.5
+    e.saliencia = 0.05
+    return e
+
+
+def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: PerfilDificultad,
+                    opciones: "OpcionesGeneracion") -> list:
+    """Evita espacios vacíos mientras la música suena.
+
+    Para cada hueco más largo que el máximo de la dificultad (más corto en el
+    clímax), en este orden:
+      1. si el sonido del evento anterior se sostiene, ese evento será un hold
+         que cubre el hueco;
+      2. se agregan los golpes reales más fuertes que habían quedado fuera;
+      3. si aún queda hueco y la música está fuerte, notas en los pulsos.
+    """
+    if len(seleccion) < 2:
+        return seleccion
+    periodo = analisis.periodo
+    libres = sorted(libres, key=lambda e: e.tiempo)
+    tiempos_libres = [e.tiempo for e in libres]
+    usados: set[int] = set()
+    nuevos: list[_Evento] = []
+    separacion = perfil.separacion_min
+
+    def intensidad_media(a, b):
+        i, j = analisis.frame(a), max(analisis.frame(b), analisis.frame(a) + 1)
+        return float(analisis.intensidad[i:j].mean())
+
+    def rellenar(a: _Evento | None, t0: float, t1: float, profundidad: int = 0):
+        maximo = _hueco_maximo(analisis, perfil, (t0 + t1) / 2)
+        if t1 - t0 <= maximo or intensidad_media(t0, t1) < 0.25 or profundidad > 64:
+            return
+        # 1. Hold sobre un sonido sostenido.
+        if a is not None and opciones.holds > 0 and profundidad == 0:
+            sostenido = analisis.sostenido(a.tiempo)
+            if sostenido >= 0.6 * (t1 - t0) and sostenido >= perfil.hold_min_pulsos * periodo:
+                a.hold_hasta = t1
+                return
+        # 2. El golpe real más fuerte que quedó afuera dentro del hueco.
+        i0 = bisect_left(tiempos_libres, t0 + separacion - 1e-6)
+        i1 = bisect_left(tiempos_libres, t1 - separacion + 1e-6)
+        mejor = None
+        for j in range(i0, i1):
+            if j in usados or libres[j].saliencia < 0.03:
+                continue
+            puntaje = libres[j].saliencia + _BONO_NIVEL[libres[j].nivel]
+            if mejor is None or puntaje > mejor[0]:
+                mejor = (puntaje, j)
+        if mejor is not None:
+            j = mejor[1]
+            usados.add(j)
+            nuevos.append(libres[j])
+            rellenar(None, t0, libres[j].tiempo, profundidad + 1)
+            rellenar(libres[j], libres[j].tiempo, t1, profundidad + 1)
+            return
+        # 3. Pulsos, solo si la música está claramente sonando.
+        if intensidad_media(t0, t1) < 0.45:
+            return
+        paso = max(1, int(round(maximo / periodo))) * periodo
+        primero = analisis.offset + np.ceil((t0 + separacion - analisis.offset) / periodo) * periodo
+        t = primero
+        while t < t1 - max(separacion, 0.5 * periodo):
+            nuevos.append(_evento_de_pulso(analisis, t))
+            t += paso
+
+    previos = list(seleccion)
+    for a, b in zip(previos, previos[1:]):
+        rellenar(a, a.tiempo, b.tiempo)
+    return sorted(previos + nuevos, key=lambda e: e.tiempo)
 
 
 # ---------------------------------------------------------------------------
@@ -477,7 +572,8 @@ class _Asignador:
         self.holds_activos: dict[int, Nota] = {}
         self.memoria: dict[tuple, tuple] = {}
         self.frases: list[tuple[str, int]] = []
-        self.limite_holds = 1 if perfil.nombre in ("Easy", "Normal") and self.k == 4 else max(1, self.k // 2)
+        self.limite_holds = 1 if perfil.nombre == "Easy" and self.k == 4 else max(1, self.k // 2)
+        self.tiempos_eventos: list[float] = []
         self.paso_hold = self.a.periodo / (2 if perfil.divisor <= 2 else 4)
         self.hueco_hold = max(0.06, perfil.jack_min * 0.5)  # tras soltar un hold
 
@@ -647,25 +743,69 @@ class _Asignador:
             if nota.fin <= t:
                 del self.holds_activos[c]
 
-    def _quizas_hold(self, nota: Nota, siguiente: float | None):
-        p, a = self.p, self.a
-        if len(self.holds_activos) >= self.limite_holds:
+    def _fin_musical(self, t: float, objetivo: float, minimo: float) -> float | None:
+        """Elige dónde soltar un hold que debería durar hasta `objetivo`.
+
+        Se prefiere soltar justo cuando empieza otra nota (el gesto natural de un
+        LN); si no hay ninguna cerca, en el tiempo más fuerte de la rejilla antes
+        de que se apague el sonido.
+        """
+        a = self.a
+        tolerancia = 0.5 * a.periodo
+        i = bisect_left(self.tiempos_eventos, t + minimo - 1e-6)
+        j = bisect_left(self.tiempos_eventos, objetivo + tolerancia)
+        if j > i:
+            fin = self.tiempos_eventos[j - 1]
+            if self.p.nombre == "Easy":
+                fin -= self.paso_hold  # en Easy no se suelta y se presiona a la vez
+            if fin - t >= minimo - 1e-6:
+                return fin
+        mejor = None
+        paso = self.paso_hold
+        k = np.floor((objetivo - a.offset) / paso + 1e-6)
+        while True:
+            fin = a.offset + k * paso
+            if fin - t < minimo - 1e-6:
+                break
+            relativo = (fin - a.offset) / a.periodo
+            fuerza = 2 if abs(relativo - round(relativo)) < 1e-6 else (1 if abs(2 * relativo - round(2 * relativo)) < 1e-6 else 0)
+            if mejor is None or fuerza > mejor[0]:
+                mejor = (fuerza, fin)
+            if fuerza == 2:
+                break
+            k -= 1
+        return mejor[1] if mejor else None
+
+    def _quizas_hold(self, evento, nota: Nota, siguiente: float | None, en_rafaga: bool):
+        p, a, o = self.p, self.a, self.o
+        if o.holds <= 0 or len(self.holds_activos) >= self.limite_holds:
             return
-        if a.maximo(a.confianza_melodia, nota.tiempo + 0.03, 0.03) < 0.25:
-            return
-        sostenido = a.sostenido(nota.tiempo)
         minimo = p.hold_min_pulsos * a.periodo
-        if sostenido < minimo:
-            return
-        probabilidad = p.prob_hold * self.o.holds * (0.6 + 0.8 * self.o.melodia)
+        espacio = (siguiente - nota.tiempo) if siguiente is not None else 4 * a.periodo
+        if evento.hold_hasta > nota.tiempo:
+            # El relleno de huecos pidió cubrir este espacio con un hold.
+            objetivo = evento.hold_hasta
+            probabilidad = min(1.0, 0.6 + 0.4 * o.holds)
+        else:
+            sostenido = a.sostenido(nota.tiempo)
+            if sostenido >= minimo:
+                objetivo = nota.tiempo + sostenido
+                probabilidad = p.prob_hold * min(o.holds, 1.5) * (0.5 + 1.2 * evento.melodico)
+            elif o.holds > 1.0:
+                # Sobre 1×, estilo LN: también se alargan notas cortas; la otra mano
+                # sigue tocando y el hold se suelta en una nota cercana.
+                objetivo = nota.tiempo + max(minimo, a.periodo)
+                probabilidad = 0.3 * (o.holds - 1.0) * (1.0 if p.nombre in ("Hard", "Insane") else 0.6)
+            else:
+                return
+            if espacio >= a.periodo:
+                probabilidad *= 2.0  # hay aire después: un hold lo llena
+            if en_rafaga:
+                probabilidad *= 0.35
         if self.rng.random() >= probabilidad:
             return
-        pasos = np.floor((nota.tiempo + sostenido - a.offset) / self.paso_hold + 1e-6)
-        fin = a.offset + pasos * self.paso_hold
-        if siguiente is not None and self.p.nombre == "Easy":
-            fin = min(fin, siguiente - self.paso_hold)
-        fin = min(fin, a.duracion - 0.05)
-        if fin - nota.tiempo < minimo - 1e-6:
+        fin = self._fin_musical(nota.tiempo, min(objetivo, a.duracion - 0.05), minimo)
+        if fin is None:
             return
         nota.fin = fin
         self.fin_hold[nota.columna] = fin
@@ -685,6 +825,7 @@ class _Asignador:
     # -- recorrido -----------------------------------------------------------
     def asignar(self, eventos: list) -> list:
         frases = agrupar_frases(eventos, self.a.periodo)
+        self.tiempos_eventos = [e.tiempo for e in eventos]
         for indice_frase, frase in enumerate(frases):
             tipo, columnas = self._patron_para(frase)
             self.frases.append((tipo, len(frase)))
@@ -712,9 +853,11 @@ class _Asignador:
                     siguiente = frases[indice_frase + 1][0].tiempo
                 else:
                     siguiente = None
-                # Los holds van donde hay aire: final de frase o frases lentas.
-                if i == len(frase) - 1 or not rapido:
-                    self._quizas_hold(nuevas[int(self.rng.integers(len(nuevas)))], siguiente)
+                # En ráfagas solo se sostiene al inicio o al final de la frase.
+                if not rapido or i in (0, len(frase) - 1) or evento.hold_hasta or self.o.holds > 1.0:
+                    en_rafaga = rapido and i < len(frase) - 1
+                    self._quizas_hold(evento, nuevas[int(self.rng.integers(len(nuevas)))],
+                                      siguiente, en_rafaga)
         return self.notas
 
 
@@ -725,7 +868,7 @@ class _Asignador:
 def generar_mapa(analisis: Analisis, opciones: OpcionesGeneracion) -> Mapa:
     perfil = obtener_perfil(opciones.dificultad, opciones.teclas)
     eventos = construir_eventos(analisis, perfil, opciones)
-    eventos = seleccionar_eventos(analisis, eventos, perfil, opciones.densidad)
+    eventos = seleccionar_eventos(analisis, eventos, perfil, opciones)
     asignador = _Asignador(analisis, opciones, perfil)
     notas = asignador.asignar(eventos)
     notas = [n for n in notas if 0 <= n.tiempo < analisis.duracion]

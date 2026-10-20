@@ -2,6 +2,7 @@
 
 import json
 import shutil
+from collections import OrderedDict
 import time
 import uuid
 from pathlib import Path
@@ -67,45 +68,73 @@ def inicio():
     return send_from_directory(app.static_folder, "index.html")
 
 
-@app.post("/api/generar")
-def generar():
+# Análisis en memoria por trabajo: regenerar no vuelve a descargar ni a analizar.
+_ANALISIS: "OrderedDict[str, tuple]" = OrderedDict()
+_MAXIMO_EN_MEMORIA = 8
+
+
+def _leer_trabajo(carpeta: Path) -> dict:
+    return json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+
+
+def _guardar_trabajo(carpeta: Path, datos: dict) -> None:
+    (carpeta / "trabajo.json").write_text(json.dumps(datos), encoding="utf-8")
+
+
+def _analisis_de(id_trabajo: str, carpeta: Path, datos: dict, bpm, offset_ms):
+    """Devuelve el análisis del trabajo, rehaciéndolo solo si cambió el BPM/offset forzado."""
+    clave = (bpm, offset_ms)
+    guardado = _ANALISIS.get(id_trabajo)
+    if guardado is not None and guardado[0] == clave:
+        _ANALISIS.move_to_end(id_trabajo)
+        return guardado[1], 0.0
+    inicio_t = time.time()
+    senal, sr = cargar_audio(carpeta / datos["original"])
+    analisis = analizar(senal, sr, bpm=bpm, offset=offset_ms / 1000 if offset_ms is not None else None)
+    _ANALISIS[id_trabajo] = (clave, analisis)
+    while len(_ANALISIS) > _MAXIMO_EN_MEMORIA:
+        _ANALISIS.popitem(last=False)
+    return analisis, time.time() - inicio_t
+
+
+def _imagen_subida():
+    imagen = request.files.get("imagen")
+    if imagen is not None and not imagen.filename:
+        imagen = None
+    if imagen is not None and Path(imagen.filename).suffix.lower() not in EXTENSIONES_IMAGEN:
+        abort(400, "La imagen debe ser JPG, PNG o WEBP.")
+    return imagen
+
+
+def _bpm_y_offset():
+    bpm = _numero("bpm")
+    offset_ms = _numero("offset_ms")
+    if bpm is not None and not 30 <= bpm <= 400:
+        abort(400, "El BPM debe estar entre 30 y 400.")
+    return bpm, offset_ms
+
+
+def _crear_trabajo():
+    """Guarda el audio (subido o de YouTube), lo analiza y elige el fondo."""
     _limpiar_trabajos_viejos()
     archivo = request.files.get("audio")
     if archivo is not None and not archivo.filename:
         archivo = None
     url = request.form.get("url", "").strip()
     if archivo is None and not url:
-        return jsonify(error="Sube un archivo de audio o pega un enlace de YouTube."), 400
+        abort(400, "Sube un archivo de audio o pega un enlace de YouTube.")
     if archivo is not None:
         extension = Path(archivo.filename).suffix.lower()
         if extension not in EXTENSIONES_ADMITIDAS:
-            return jsonify(error="Formato no admitido. Usa MP3, WAV, FLAC u OGG."), 400
+            abort(400, "Formato no admitido. Usa MP3, WAV, FLAC u OGG.")
     elif not es_url_youtube(url):
-        return jsonify(error="El enlace no es de YouTube."), 400
-    imagen = request.files.get("imagen")
-    if imagen is not None and not imagen.filename:
-        imagen = None
-    if imagen is not None and Path(imagen.filename).suffix.lower() not in EXTENSIONES_IMAGEN:
-        return jsonify(error="La imagen debe ser JPG, PNG o WEBP."), 400
-
-    teclas = [int(t) for t in _lista("teclas", {"4", "7"}, ["4"])]
-    dificultades = _lista("dificultades", set(DIFICULTADES), list(DIFICULTADES))
-    percusion = _numero("percusion", 0.5)
-    melodia = _numero("melodia", 0.5)
-    if percusion + melodia < 0.05:
-        return jsonify(error="La percusión y la melodía no pueden estar ambas en cero."), 400
-    densidad = _numero("densidad", 1.0)
-    holds = _numero("holds", 1.0)
-    semilla = _numero("semilla", 0, int)
-    bpm = _numero("bpm")
-    offset_ms = _numero("offset_ms")
-    if bpm is not None and not 30 <= bpm <= 400:
-        return jsonify(error="El BPM debe estar entre 30 y 400."), 400
+        abort(400, "El enlace no es de YouTube.")
+    imagen = _imagen_subida()
+    bpm, offset_ms = _bpm_y_offset()
 
     id_trabajo = str(uuid.uuid4())
     carpeta = TRABAJOS / id_trabajo
     carpeta.mkdir(parents=True)
-
     if archivo is not None:
         original = carpeta / f"original{extension}"
         archivo.save(original)
@@ -115,24 +144,18 @@ def generar():
             original, sugerido = descargar_audio(url, carpeta)
         except ErrorAudio as error:
             shutil.rmtree(carpeta, ignore_errors=True)
-            return jsonify(error=str(error)), 400
+            abort(400, str(error))
 
-    meta = Metadatos(
-        titulo=request.form.get("titulo", "").strip() or sugerido["titulo"],
-        artista=request.form.get("artista", "").strip() or sugerido["artista"],
-        creador=request.form.get("creador", "").strip() or "Generador osu!mania",
-    )
-
+    datos = {"original": original.name, "titulo": sugerido["titulo"], "artista": sugerido["artista"],
+             "fuente": url or archivo.filename}
     try:
-        inicio_t = time.time()
-        senal, sr = cargar_audio(original)
-        analisis = analizar(senal, sr, bpm=bpm,
-                            offset=offset_ms / 1000 if offset_ms is not None else None)
-        t_analisis = time.time() - inicio_t
         audio_osu = preparar_audio_osu(original, carpeta / "osz")
+        datos["audio"] = audio_osu.name
+        analisis, segundos = _analisis_de(id_trabajo, carpeta, datos, bpm, offset_ms)
     except ErrorAudio as error:
         shutil.rmtree(carpeta, ignore_errors=True)
-        return jsonify(error=str(error)), 400
+        _ANALISIS.pop(id_trabajo, None)
+        abort(400, str(error))
 
     subida = None
     if imagen is not None:
@@ -140,7 +163,51 @@ def generar():
         imagen.save(subida)
     fondo = elegir_fondo(carpeta / "osz" / "fondo.jpg", imagen_subida=subida,
                          miniatura=sugerido.get("miniatura"), audio=original)
+    datos["fondo"] = fondo.name if fondo else None
+    _guardar_trabajo(carpeta, datos)
+    return id_trabajo, carpeta, datos, analisis, segundos
 
+
+def _respuesta_trabajo(id_trabajo, datos, analisis, segundos):
+    return {
+        "id": id_trabajo,
+        "tiempo_analisis": round(segundos, 2),
+        "analisis": analisis.resumen(),
+        "audio": f"/api/trabajos/{id_trabajo}/audio",
+        "fondo": f"/api/trabajos/{id_trabajo}/fondo?v={int(time.time())}" if datos.get("fondo") else None,
+        "metadatos": {"titulo": datos["titulo"], "artista": datos["artista"]},
+        "fuente": datos.get("fuente"),
+    }
+
+
+def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
+    """Genera los mapas con los parámetros del formulario (sin descargar nada)."""
+    teclas = [int(t) for t in _lista("teclas", {"4", "7"}, ["4"])]
+    dificultades = _lista("dificultades", set(DIFICULTADES), list(DIFICULTADES))
+    percusion = _numero("percusion", 0.5)
+    melodia = _numero("melodia", 0.5)
+    if percusion + melodia < 0.05:
+        abort(400, "La percusión y la melodía no pueden estar ambas en cero.")
+    densidad = _numero("densidad", 1.0)
+    holds = _numero("holds", 1.0)
+    semilla = _numero("semilla", 0, int)
+
+    # Datos de la canción editables en cada generación.
+    datos["titulo"] = request.form.get("titulo", "").strip() or datos["titulo"]
+    datos["artista"] = request.form.get("artista", "").strip() or datos["artista"]
+    meta = Metadatos(titulo=datos["titulo"], artista=datos["artista"],
+                     creador=request.form.get("creador", "").strip() or "Generador osu!mania")
+    imagen = _imagen_subida() if usar_imagen else None
+    if imagen is not None:
+        subida = carpeta / f"imagen{Path(imagen.filename).suffix.lower()}"
+        imagen.save(subida)
+        fondo = elegir_fondo(carpeta / "osz" / "fondo.jpg", imagen_subida=subida)
+        if fondo is not None:
+            datos["fondo"] = fondo.name
+    fondo = carpeta / "osz" / datos["fondo"] if datos.get("fondo") else None
+
+    for viejo in carpeta.glob("*.osu"):
+        viejo.unlink()
     mapas = []
     archivos = {}
     for k in teclas:
@@ -152,7 +219,7 @@ def generar():
             informe = validar(mapa, analisis.duracion)
             version = nombre_version(mapa)
             nombre = nombre_archivo(meta, version)
-            contenido = exportar_osu(mapa, analisis, meta, audio=audio_osu.name,
+            contenido = exportar_osu(mapa, analisis, meta, audio=datos["audio"],
                                      fondo=fondo.name if fondo else None)
             archivos[nombre] = contenido
             (carpeta / f"{len(mapas)}.osu").write_text(contenido, encoding="utf-8")
@@ -167,30 +234,53 @@ def generar():
                            round(n.fin * 1000) if n.es_hold else -1] for n in mapa.notas],
             })
 
-    nombre_osz = nombre_archivo(meta, "set")[:-len(" [set].osu")] + ".osz"
-    empaquetar_osz(carpeta / "mapas.osz", audio_osu, archivos, fondo=fondo)
-    (carpeta / "trabajo.json").write_text(json.dumps({
-        "osz": nombre_osz, "archivos": [m["archivo"] for m in mapas],
-        "audio": audio_osu.name, "fondo": fondo.name if fondo else None}), encoding="utf-8")
+    datos["osz"] = nombre_archivo(meta, "set")[:-len(" [set].osu")] + ".osz"
+    datos["archivos"] = [m["archivo"] for m in mapas]
+    empaquetar_osz(carpeta / "mapas.osz", carpeta / "osz" / datos["audio"], archivos, fondo=fondo)
+    _guardar_trabajo(carpeta, datos)
+    version = int(time.time() * 1000)
+    return {
+        "mapas": mapas,
+        "osz": f"/api/trabajos/{id_trabajo}/osz?v={version}",
+        "version": version,
+    }
 
-    return jsonify(
-        id=id_trabajo,
-        tiempo_analisis=round(t_analisis, 2),
-        analisis=analisis.resumen(),
-        mapas=mapas,
-        osz=f"/api/trabajos/{id_trabajo}/osz",
-        audio=f"/api/trabajos/{id_trabajo}/audio",
-        fondo=f"/api/trabajos/{id_trabajo}/fondo" if fondo else None,
-        metadatos={"titulo": meta.titulo, "artista": meta.artista},
-    )
+
+@app.post("/api/trabajos")
+def crear_trabajo():
+    """Paso 1: subir o descargar la canción y analizarla."""
+    id_trabajo, _carpeta, datos, analisis, segundos = _crear_trabajo()
+    return jsonify(_respuesta_trabajo(id_trabajo, datos, analisis, segundos))
+
+
+@app.post("/api/trabajos/<id_trabajo>/generar")
+def regenerar(id_trabajo):
+    """Paso 2 (repetible): generar con otros parámetros o datos, sin volver a descargar."""
+    carpeta = _carpeta_trabajo(id_trabajo)
+    datos = _leer_trabajo(carpeta)
+    bpm, offset_ms = _bpm_y_offset()
+    try:
+        analisis, segundos = _analisis_de(id_trabajo, carpeta, datos, bpm, offset_ms)
+    except ErrorAudio as error:
+        abort(400, str(error))
+    resultado = _generar_mapas(id_trabajo, carpeta, datos, analisis)
+    return jsonify({**_respuesta_trabajo(id_trabajo, datos, analisis, segundos), **resultado})
+
+
+@app.post("/api/generar")
+def generar():
+    """Atajo: crear el trabajo y generar en una sola llamada."""
+    id_trabajo, carpeta, datos, analisis, segundos = _crear_trabajo()
+    resultado = _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=False)
+    return jsonify({**_respuesta_trabajo(id_trabajo, datos, analisis, segundos), **resultado})
 
 
 @app.get("/api/trabajos/<id_trabajo>/osu/<int:indice>")
 def descargar_osu(id_trabajo, indice):
     carpeta = _carpeta_trabajo(id_trabajo)
-    datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+    datos = _leer_trabajo(carpeta)
     ruta = carpeta / f"{indice}.osu"
-    if not ruta.exists() or indice >= len(datos["archivos"]):
+    if not ruta.exists() or indice >= len(datos.get("archivos", [])):
         abort(404)
     return send_file(ruta, as_attachment=True, download_name=datos["archivos"][indice],
                      mimetype="text/plain")
@@ -199,7 +289,9 @@ def descargar_osu(id_trabajo, indice):
 @app.get("/api/trabajos/<id_trabajo>/osz")
 def descargar_osz(id_trabajo):
     carpeta = _carpeta_trabajo(id_trabajo)
-    datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+    datos = _leer_trabajo(carpeta)
+    if "osz" not in datos:
+        abort(404)
     return send_file(carpeta / "mapas.osz", as_attachment=True, download_name=datos["osz"],
                      mimetype="application/octet-stream")
 
@@ -207,14 +299,14 @@ def descargar_osz(id_trabajo):
 @app.get("/api/trabajos/<id_trabajo>/audio")
 def audio_trabajo(id_trabajo):
     carpeta = _carpeta_trabajo(id_trabajo)
-    datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+    datos = _leer_trabajo(carpeta)
     return send_file(carpeta / "osz" / datos["audio"], conditional=True)
 
 
 @app.get("/api/trabajos/<id_trabajo>/fondo")
 def fondo_trabajo(id_trabajo):
     carpeta = _carpeta_trabajo(id_trabajo)
-    datos = json.loads((carpeta / "trabajo.json").read_text(encoding="utf-8"))
+    datos = _leer_trabajo(carpeta)
     if not datos.get("fondo"):
         abort(404)
     return send_file(carpeta / "osz" / datos["fondo"], mimetype="image/jpeg")

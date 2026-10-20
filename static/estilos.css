@@ -137,3 +137,11 @@ button.ficha.activa { border-color: var(--acento); color: var(--acento); }
   .cabecera-analisis { flex-direction: column; }
   #miniatura { max-width: 100%; width: 100%; }
 }
+
+.cancion-cargada { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap;
+  background: #66ccff14; border: 1px solid var(--acento-2); border-radius: 10px; padding: 12px 14px; }
+.cancion-cargada > div { display: grid; gap: 2px; min-width: 0; }
+.cancion-cargada strong { overflow-wrap: anywhere; }
+.cancion-cargada small { color: var(--suave); }
+#fuente { display: grid; gap: 14px; }
+[hidden] { display: none !important; }

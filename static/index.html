@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Generador osu!mania</title>
-  <link rel="stylesheet" href="/static/estilos.css?v=3">
+  <link rel="stylesheet" href="/static/estilos.css?v=5">
 </head>
 <body>
   <header class="cabecera">
@@ -14,6 +14,16 @@
 
   <main>
     <form id="formulario" class="tarjeta">
+      <div id="cancion-cargada" class="cancion-cargada" hidden>
+        <div>
+          <strong id="cancion-nombre"></strong>
+          <small id="cancion-detalle"></small>
+          <small>Cambia los datos o los parámetros y pulsa <em>Regenerar</em>: no se vuelve a descargar ni a analizar la canción.</small>
+        </div>
+        <button type="button" id="otra-cancion">Usar otra canción</button>
+      </div>
+
+      <div id="fuente">
       <label id="zona-audio" class="zona-audio">
         <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
         <strong id="nombre-audio">Arrastra o elige un audio</strong>
@@ -23,9 +33,10 @@
       <label class="enlace">… o pega un enlace de YouTube
         <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
       </label>
+      </div>
 
       <div class="rejilla">
-        <label>Título <input name="titulo" id="titulo" placeholder="Se toma del archivo"></label>
+        <label>Título <input name="titulo" id="titulo" placeholder="Se toma del archivo o del video"></label>
         <label>Artista <input name="artista" id="artista" placeholder="Desconocido"></label>
         <label>Creador <input name="creador" placeholder="Generador osu!mania"></label>
       </div>
@@ -67,14 +78,14 @@
         <label>Densidad <output id="v-densidad">1.0×</output>
           <input type="range" name="densidad" min="0.5" max="1.8" step="0.1" value="1.0">
         </label>
-        <label>Holds <output id="v-holds">1.0×</output>
+        <label>Holds (sobre 1×: estilo LN) <output id="v-holds">1.0×</output>
           <input type="range" name="holds" min="0" max="2.5" step="0.1" value="1.0">
         </label>
       </div>
 
       <label class="ficha-imagen">Imagen de fondo (opcional)
         <input id="imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,.webp,image/*">
-        <small>Si no subes una, se usa la miniatura del video de YouTube o la portada del audio.</small>
+        <small>Si no subes una, se usa la miniatura del video de YouTube o la portada del audio. Puedes cambiarla al regenerar.</small>
       </label>
 
       <details>
@@ -137,6 +148,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=5"></script>
+  <script src="/static/app.js?v=6"></script>
 </body>
 </html>

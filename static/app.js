@@ -21,6 +21,8 @@ const estado = {
   mapa: null,
   animacion: null,
   fondo: null,
+  trabajo: null,       // canción ya subida/descargada y analizada en el servidor
+  fuenteNueva: false,  // el usuario eligió otra canción desde la última carga
 };
 
 // ---------------------------------------------------------------- formulario
@@ -32,6 +34,7 @@ const entradaAudio = $("audio");
 function elegirArchivo(archivo) {
   if (!archivo) return;
   estado.archivo = archivo;
+  estado.fuenteNueva = true;
   $("url").value = "";
   $("nombre-audio").textContent = archivo.name;
   // "Artista - Título.mp3" rellena los metadatos si están vacíos.
@@ -47,6 +50,7 @@ function elegirArchivo(archivo) {
 
 entradaAudio.addEventListener("change", () => elegirArchivo(entradaAudio.files[0]));
 $("url").addEventListener("input", () => {
+  if ($("url").value.trim()) estado.fuenteNueva = true;
   if (!$("url").value.trim() || !estado.archivo) return;
   // Un enlace reemplaza al archivo elegido.
   estado.archivo = null;
@@ -99,10 +103,42 @@ function valoresMarcados(nombre) {
   return [...formulario.querySelectorAll(`input[name="${nombre}"]:checked`)].map((c) => c.value).join(",");
 }
 
+function usarTrabajo(json) {
+  estado.trabajo = json;
+  estado.fuenteNueva = false;
+  $("cancion-cargada").hidden = false;
+  $("fuente").hidden = true;
+  $("cancion-nombre").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo}`;
+  const a = json.analisis;
+  $("cancion-detalle").textContent = `${formatoTiempo(a.duracion)} · ${a.bpm} BPM · ${json.fuente || ""}`;
+  $("boton-generar").textContent = "Regenerar con estos ajustes";
+}
+
+$("otra-cancion").addEventListener("click", () => {
+  estado.trabajo = null;
+  estado.archivo = null;
+  entradaAudio.value = "";
+  $("url").value = "";
+  $("titulo").value = "";
+  $("artista").value = "";
+  $("nombre-audio").textContent = "Arrastra o elige un audio";
+  $("cancion-cargada").hidden = true;
+  $("fuente").hidden = false;
+  $("boton-generar").textContent = "Generar beatmaps";
+});
+
+async function pedir(url, datos) {
+  const respuesta = await fetch(url, { method: "POST", body: datos });
+  const json = await respuesta.json().catch(() => ({ error: "Respuesta inválida del servidor." }));
+  if (!respuesta.ok) throw new Error(json.error || "Error en el servidor.");
+  return json;
+}
+
 formulario.addEventListener("submit", async (e) => {
   e.preventDefault();
   const url = $("url").value.trim();
-  if (!estado.archivo && !url) {
+  const reutilizar = estado.trabajo && !estado.fuenteNueva;
+  if (!reutilizar && !estado.archivo && !url) {
     mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
     return;
   }
@@ -116,28 +152,43 @@ formulario.addEventListener("submit", async (e) => {
     mostrarEstado("Elige al menos un modo y una dificultad.", true);
     return;
   }
-  const datos = new FormData();
-  if (estado.archivo) datos.append("audio", estado.archivo);
-  else datos.append("url", url);
-  datos.append("teclas", teclas);
-  datos.append("dificultades", dificultades);
-  for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
-    datos.append(campo, formulario.elements[campo].value);
-  }
-  datos.append("percusion", Number(formulario.elements.percusion.value) / 100);
-  datos.append("melodia", Number(formulario.elements.melodia.value) / 100);
-  const imagen = $("imagen").files[0];
-  if (imagen) datos.append("imagen", imagen);
 
   const boton = $("boton-generar");
   boton.disabled = true;
-  mostrarEstado(estado.archivo ? "Analizando la canción y generando mapas…"
-    : "Descargando el audio de YouTube, analizando y generando mapas…");
   try {
-    const respuesta = await fetch("/api/generar", { method: "POST", body: datos });
-    const json = await respuesta.json().catch(() => ({ error: "Respuesta inválida del servidor." }));
-    if (!respuesta.ok) throw new Error(json.error || "Error al generar.");
-    mostrarEstado(`Listo: ${json.mapas.length} mapas en ${json.tiempo_analisis}s de análisis.`);
+    let imagenUsada = false;
+    if (!reutilizar) {
+      // Paso 1: subir o descargar y analizar (solo una vez por canción).
+      const carga = new FormData();
+      if (estado.archivo) carga.append("audio", estado.archivo);
+      else carga.append("url", url);
+      for (const campo of ["bpm", "offset_ms"]) carga.append(campo, formulario.elements[campo].value);
+      const imagen = $("imagen").files[0];
+      if (imagen) { carga.append("imagen", imagen); imagenUsada = true; }
+      mostrarEstado(estado.archivo ? "Analizando la canción…" : "Descargando el audio de YouTube y analizando…");
+      const trabajo = await pedir("/api/trabajos", carga);
+      if (!$("titulo").value) $("titulo").value = trabajo.metadatos.titulo;
+      if (!$("artista").value || $("artista").value === "Desconocido") $("artista").value = trabajo.metadatos.artista;
+      usarTrabajo(trabajo);
+    }
+
+    // Paso 2: generar (repetible con otros datos y parámetros).
+    const datos = new FormData();
+    datos.append("teclas", teclas);
+    datos.append("dificultades", dificultades);
+    for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
+      datos.append(campo, formulario.elements[campo].value);
+    }
+    datos.append("percusion", Number(formulario.elements.percusion.value) / 100);
+    datos.append("melodia", Number(formulario.elements.melodia.value) / 100);
+    const imagen = $("imagen").files[0];
+    if (imagen && !imagenUsada) datos.append("imagen", imagen);
+    mostrarEstado("Generando mapas…");
+    const json = await pedir(`/api/trabajos/${estado.trabajo.id}/generar`, datos);
+    $("imagen").value = "";
+    usarTrabajo(json);
+    const reanalisis = json.tiempo_analisis > 0 ? ` (se reanalizó con el BPM/offset nuevo en ${json.tiempo_analisis}s)` : "";
+    mostrarEstado(`Listo: ${json.mapas.length} mapas${reanalisis}.`);
     mostrarResultados(json);
   } catch (error) {
     mostrarEstado(error.message, true);
@@ -181,7 +232,7 @@ function mostrarResultados(json) {
   const miniatura = $("miniatura");
   estado.fondo = null;
   if (json.fondo) {
-    miniatura.src = `${json.fondo}?t=${json.id}`;
+    miniatura.src = json.fondo;
     miniatura.hidden = false;
     const imagenFondo = new Image();
     imagenFondo.onload = () => { estado.fondo = imagenFondo; dibujarCampo(); };
@@ -231,8 +282,12 @@ function mostrarResultados(json) {
 
   if (!$("titulo").value) $("titulo").value = json.metadatos.titulo;
   if (!$("artista").value) $("artista").value = json.metadatos.artista;
-  reproductor.src = json.audio;
-  elegirMapa(json.mapas[0].indice);
+  // Al regenerar se conserva la posición del audio y la dificultad que se estaba viendo.
+  const versionAnterior = estado.mapa ? estado.mapa.version : null;
+  if (!reproductor.src.endsWith(json.audio)) reproductor.src = json.audio;
+  const mismo = json.mapas.find((m) => m.version === versionAnterior) || json.mapas[0];
+  selector.value = mismo.indice;
+  elegirMapa(mismo.indice);
 }
 
 function ajustarCanvas(canvas) {

@@ -148,3 +148,63 @@ def test_capas_detectadas(realista):
     fuertes = capa.onsets[capa.fuerzas > 0.25]
     assert np.mean([np.min(np.abs(fuertes - t)) < 0.03 for t in bombos]) > 0.95
     assert np.mean([np.min(np.abs(bombos - t)) < 0.03 for t in fuertes]) > 0.9
+
+
+# --- huecos, clímax y holds ---------------------------------------------------
+
+def _hueco_maximo(mapa, desde, hasta):
+    ocupado = sorted((n.tiempo, n.fin or n.tiempo) for n in mapa.notas if desde <= n.tiempo < hasta)
+    ultimo, maximo = desde, 0.0
+    for inicio, fin in ocupado:
+        maximo = max(maximo, inicio - ultimo)
+        ultimo = max(ultimo, fin)
+    return max(maximo, hasta - ultimo)
+
+
+@pytest.mark.parametrize("dificultad", ["Normal", "Hard", "Insane"])
+def test_sin_huecos_con_musica(realista, dificultad):
+    analisis, _ = realista
+    mapa = generar_mapa(analisis, OpcionesGeneracion(4, dificultad))
+    inicio_musica = analisis.offset + 4 * 4 * analisis.periodo  # después de la intro
+    fin_musica = analisis.duracion - 1.5
+    assert _hueco_maximo(mapa, inicio_musica, fin_musica) <= 2.05 * analisis.periodo
+
+
+def test_coro_sostenido_no_queda_vacio():
+    from sintetico import SECCIONES_SOSTENIDAS, cancion_realista
+    senal, _ = cancion_realista(secciones=SECCIONES_SOSTENIDAS)
+    analisis = analizar(senal, SR)
+    paso = analisis.periodo / 4
+    inicio_coro = 0.6 + 12 * 16 * paso
+    fin_coro = inicio_coro + 8 * 16 * paso
+    mapa = generar_mapa(analisis, OpcionesGeneracion(4, "Hard"))
+    assert _hueco_maximo(mapa, inicio_coro, fin_coro) <= 1.05 * analisis.periodo
+    holds = [n for n in mapa.notas if n.es_hold and inicio_coro <= n.tiempo < fin_coro]
+    assert len(holds) >= 8  # las notas largas de la melodía se vuelven holds
+
+
+@pytest.mark.parametrize("dificultad", ["Normal", "Hard", "Insane"])
+def test_control_de_holds(realista, dificultad):
+    analisis, _ = realista
+
+    def proporcion(holds):
+        mapa = generar_mapa(analisis, OpcionesGeneracion(4, dificultad, holds=holds))
+        assert validar(mapa, analisis.duracion)["valido"]
+        return sum(n.es_hold for n in mapa.notas) / len(mapa.notas)
+
+    sin, normal, ln = proporcion(0.0), proporcion(1.0), proporcion(2.5)
+    assert sin == 0
+    assert 0 < normal < ln
+    assert ln >= 0.1
+
+
+def test_holds_terminan_en_puntos_musicales(realista):
+    analisis, _ = realista
+    for dificultad in ("Normal", "Hard", "Insane"):
+        mapa = generar_mapa(analisis, OpcionesGeneracion(4, dificultad, holds=2.0))
+        inicios = np.array(sorted({n.tiempo for n in mapa.notas}))
+        holds = [n for n in mapa.notas if n.es_hold]
+        en_nota = [np.min(np.abs(inicios - n.fin)) < 1e-3 for n in holds]
+        relativo = [(n.fin - analisis.offset) / (analisis.periodo / 2) for n in holds]
+        en_rejilla = [abs(r - round(r)) < 1e-3 for r in relativo]
+        assert np.mean(np.logical_or(en_nota, en_rejilla)) >= 0.95
