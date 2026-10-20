@@ -149,8 +149,12 @@ notas largas de la voz se vuelven holds con el largo correcto.
    Los golpes fuertes de bombo y caja en tiempo se vuelven acordes, repartidos entre ambas
    manos y en proporción al peso de la percusión, por lo que caen siempre en los mismos
    lugares del compás.
-7. **Holds**: una nota se vuelve hold cuando su sonido se sostiene (voz o sintetizador
-   largo), con más probabilidad si es melódica o si después hay aire. Se suelta en un punto
+7. **Holds**: se planifican para toda la canción a la vez. Cada nota que se sostiene (en la
+   capa de su instrumento) recibe un puntaje según cuánto dura, si es melódica y si es del
+   instrumento destacado; se eligen de mayor a menor con un largo máximo (4 pulsos en Easy,
+   3 en Normal, 2 en Hard/Insane), una pausa entre holds, nunca dos eventos seguidos con
+   hold y un tope de ~25 % del tiempo cubierto (con el control en 1×). Así los holds caen en
+   las notas más largas y no se vuelven monótonos. Se suelta en un punto
    musical: justo cuando empieza otra nota (el gesto típico de un LN) o, si no hay ninguna
    cerca, en el tiempo más fuerte antes de que se apague el sonido. El control de holds va de
    0× (ninguno) a 1× (holds en sonidos sostenidos) y hasta 2,5× (estilo LN: también se
@@ -199,9 +203,12 @@ preajuste (*Batería*, *Melodía / voz*, *Bajo*, *Todo*), *Sin notas* o pesos pe
 Por API: `capas_secciones` = `[{"inicio": s, "fin": s, "capas": {"bombo": 0..1, …}}]`; fuera
 de esos tramos rigen los globales.
 
-**Interfaz**: panel de ajustes fijo a la izquierda (con el botón siempre visible) y resultados
-a la derecha; en pantallas angostas se apilan. Tema claro, oscuro o automático (sigue al
-sistema), con el botón de la barra superior.
+**Interfaz**: un flujo de pasos en orden — 1. Canción (subir/enlace; se analiza una vez),
+2. Recorte, 3. Instrumentos (toda la canción y, opcionalmente, por sección), 4. Mapas (modos,
+dificultades, densidad, holds) y 5. Resultados. Una barra fija abajo tiene siempre el único
+botón de acción: *Analizar canción* → *Generar mapas* → *Regenerar*. Si después de generar se
+cambia cualquier ajuste, aparece «Cambios sin aplicar» y el botón pasa a *Aplicar cambios y
+regenerar*. Tema claro, oscuro o automático con el botón de la barra superior.
 
 **Regenerar sin volver a descargar**: la primera vez la canción se sube o descarga y se
 analiza (`POST /api/trabajos`). Después, el formulario muestra la canción cargada y cada

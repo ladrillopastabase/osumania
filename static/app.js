@@ -18,7 +18,7 @@ const PREAJUSTES = {
 };
 // Opciones por sección: además de los preajustes, heredar lo global, silenciar o personalizar.
 const OPCIONES_SECCION = [
-  ["global", "Igual que toda la canción"],
+  ["global", "Como toda la canción"],
   ...Object.entries(PREAJUSTES).map(([clave, p]) => [clave, p.nombre]),
   ["silencio", "Sin notas"],
   ["personalizado", "Personalizado…"],
@@ -43,6 +43,7 @@ const estado = {
   recorte: null,       // {inicio, fin} en segundos de la canción completa, o null
   secciones: [],       // por sección: {opcion, valores}
   arrastre: null,      // "inicio" | "fin" mientras se arrastra un borde del recorte
+  sucio: false,        // hay ajustes cambiados desde la última generación
 };
 
 // ---------------------------------------------------------------- utilidades
@@ -229,9 +230,12 @@ zona.addEventListener("drop", (e) => {
 
 $("otra-cancion").addEventListener("click", () => {
   estado.trabajo = null;
+  estado.resultado = null;
   estado.archivo = null;
   estado.recorte = null;
   estado.secciones = [];
+  estado.mapa = null;
+  estado.sucio = false;
   entradaAudio.value = "";
   $("url").value = "";
   $("titulo").value = "";
@@ -239,7 +243,11 @@ $("otra-cancion").addEventListener("click", () => {
   $("nombre-audio").textContent = "Arrastra o elige un audio";
   $("cancion-cargada").hidden = true;
   $("fuente").hidden = false;
-  $("boton-generar").textContent = "Generar beatmaps";
+  $("paso-resultados").hidden = true;
+  reproductor.pause();
+  for (const id of ["paso-estructura", "paso-instrumentos", "paso-mapas"]) $(id).classList.add("bloqueada");
+  mostrarEstado("Elige una canción para empezar.");
+  actualizarAccion();
 });
 
 function usarTrabajo(json) {
@@ -254,10 +262,77 @@ function usarTrabajo(json) {
   }
   $("cancion-cargada").hidden = false;
   $("fuente").hidden = true;
-  $("cancion-nombre").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo}`;
-  $("cancion-detalle").textContent = `${formatoTiempo(json.analisis.duracion)} · ${json.analisis.bpm} BPM`;
-  $("boton-generar").textContent = "Regenerar con estos ajustes";
+  for (const id of ["paso-estructura", "paso-instrumentos", "paso-mapas"]) $(id).classList.remove("bloqueada");
+
+  const a = json.analisis;
+  const datos = [
+    ["BPM", a.bpm],
+    ["Offset", `${a.offset_ms} ms`],
+    ["Duración", formatoTiempo(a.duracion)],
+    ["Secciones", a.secciones.length],
+  ];
+  $("datos-analisis").innerHTML = datos.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+  $("leyenda-secciones").innerHTML = Object.entries(VARIABLE_ETIQUETA)
+    .map(([k, v]) => `<span><i style="background:var(${v})"></i>${NOMBRE_ETIQUETA[k]}</span>`).join("")
+    + `<span><i style="background:var(--texto)"></i>Intensidad</span>`;
+
+  const miniatura = $("miniatura");
+  if (json.fondo && miniatura.dataset.fuente !== json.fondo) {
+    miniatura.dataset.fuente = json.fondo;
+    miniatura.src = json.fondo;
+    const imagenFondo = new Image();
+    imagenFondo.onload = () => { estado.fondo = imagenFondo; dibujarCampo(); };
+    imagenFondo.src = json.fondo;
+  }
+  miniatura.hidden = !json.fondo;
+  if (!json.fondo) estado.fondo = null;
+
+  actualizarCamposRecorte();
+  dibujarLineaTiempo();
+  renderizarSecciones();
+  dibujarCapas();
+  actualizarAccion();
 }
+
+// ---------------------------------------------------------------- acción y cambios sin aplicar
+
+function actualizarAccion() {
+  const boton = $("boton-accion");
+  const necesitaAnalisis = !estado.trabajo || estado.fuenteNueva;
+  boton.classList.remove("atenuado");
+  if (necesitaAnalisis) {
+    boton.textContent = "Analizar canción";
+  } else if (!estado.resultado) {
+    boton.textContent = "Generar mapas";
+  } else {
+    boton.textContent = estado.sucio ? "Aplicar cambios y regenerar" : "Regenerar";
+    boton.classList.toggle("atenuado", !estado.sucio);
+  }
+  $("cambios").hidden = !(estado.resultado && estado.sucio && !necesitaAnalisis);
+  // Navegación de pasos: listos, pendientes o inactivos.
+  const hecho = { cancion: !!estado.trabajo, estructura: !!estado.trabajo, instrumentos: !!estado.trabajo,
+    mapas: !!estado.trabajo, resultados: !!estado.resultado };
+  document.querySelectorAll(".pasos a").forEach((a) => {
+    a.classList.toggle("listo", hecho[a.dataset.paso]);
+    a.classList.toggle("inactivo", a.dataset.paso !== "cancion" && !estado.trabajo);
+  });
+}
+
+function marcarCambios() {
+  if (!estado.resultado) return;
+  estado.sucio = true;
+  actualizarAccion();
+}
+
+// Cualquier cambio de ajustes después de generar queda "sin aplicar" hasta regenerar.
+formulario.addEventListener("input", (e) => {
+  if (["audio", "url"].includes(e.target.id)) { actualizarAccion(); return; }
+  marcarCambios();
+});
+formulario.addEventListener("change", (e) => {
+  if (["audio", "url"].includes(e.target.id)) { actualizarAccion(); return; }
+  marcarCambios();
+});
 
 // ---------------------------------------------------------------- envío
 
@@ -288,14 +363,29 @@ function ajustesPorSeccion() {
   });
 }
 
-formulario.addEventListener("submit", async (e) => {
-  e.preventDefault();
+async function analizar() {
   const url = $("url").value.trim();
-  const reutilizar = estado.trabajo && !estado.fuenteNueva;
-  if (!reutilizar && !estado.archivo && !url) {
+  if (!estado.archivo && !url) {
     mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
     return;
   }
+  const carga = new FormData();
+  if (estado.archivo) carga.append("audio", estado.archivo);
+  else carga.append("url", url);
+  for (const campo of ["bpm", "offset_ms"]) carga.append(campo, formulario.elements[campo].value);
+  mostrarEstado(estado.archivo ? "Analizando la canción…" : "Descargando el audio de YouTube y analizando…");
+  const trabajo = await pedir("/api/trabajos", carga);
+  $("titulo").value = $("titulo").value || trabajo.metadatos.titulo;
+  $("artista").value = ($("artista").value && $("artista").value !== "Desconocido") ? $("artista").value : trabajo.metadatos.artista;
+  estado.resultado = null;
+  estado.sucio = false;
+  $("paso-resultados").hidden = true;
+  usarTrabajo(trabajo);
+  mostrarEstado("Canción analizada. Revisa el recorte, los instrumentos y los mapas, y genera.");
+  $("paso-estructura").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+async function generar() {
   const porSeccion = ajustesPorSeccion();
   if (valoresGlobales().every((v) => v === 0) && !porSeccion.some((s) => Object.values(s.capas).some((v) => v > 0))) {
     mostrarEstado("Al menos un instrumento tiene que tener influencia.", true);
@@ -304,61 +394,51 @@ formulario.addEventListener("submit", async (e) => {
   const teclas = valoresMarcados("teclas");
   const dificultades = valoresMarcados("dificultades");
   if (!teclas || !dificultades) {
-    mostrarEstado("Elige al menos un modo y una dificultad.", true);
+    mostrarEstado("Elige al menos un modo y una dificultad (paso 4).", true);
     return;
   }
+  const datos = new FormData();
+  datos.append("teclas", teclas);
+  datos.append("dificultades", dificultades);
+  for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
+    datos.append(campo, formulario.elements[campo].value);
+  }
+  CAPAS.forEach((capa, i) => datos.append(`capa_${capa}`, valoresGlobales()[i] / 100));
+  if (porSeccion.length) datos.append("capas_secciones", JSON.stringify(porSeccion));
+  const recorte = recorteVigente();
+  if (recorte) {
+    datos.append("recorte_inicio", recorte.inicio.toFixed(3));
+    datos.append("recorte_fin", recorte.fin.toFixed(3));
+    datos.append("recorte_compas", $("recorte-compas").checked ? "1" : "0");
+  }
+  datos.append("fundido", $("fundido").value);
+  const imagen = $("imagen").files[0];
+  if (imagen) datos.append("imagen", imagen);
+  mostrarEstado("Generando mapas…");
+  const primeraVez = !estado.resultado;
+  const json = await pedir(`/api/trabajos/${estado.trabajo.id}/generar`, datos);
+  $("imagen").value = "";
+  if (json.recorte) estado.recorte = { inicio: json.recorte.inicio, fin: json.recorte.fin };
+  estado.sucio = false;
+  usarTrabajo(json);
+  mostrarResultados(json);
+  const extra = json.recorte ? ` · tramo ${formatoTiempo(json.recorte.inicio, true)}–${formatoTiempo(json.recorte.fin, true)}` : "";
+  mostrarEstado(`Listo: ${json.mapas.length} mapas${extra}.`);
+  if (primeraVez) $("paso-resultados").scrollIntoView({ behavior: "smooth", block: "start" });
+}
 
-  const boton = $("boton-generar");
+formulario.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const boton = $("boton-accion");
   boton.disabled = true;
   try {
-    let imagenUsada = false;
-    if (!reutilizar) {
-      // Paso 1: subir o descargar y analizar (solo una vez por canción).
-      const carga = new FormData();
-      if (estado.archivo) carga.append("audio", estado.archivo);
-      else carga.append("url", url);
-      for (const campo of ["bpm", "offset_ms"]) carga.append(campo, formulario.elements[campo].value);
-      const imagen = $("imagen").files[0];
-      if (imagen) { carga.append("imagen", imagen); imagenUsada = true; }
-      mostrarEstado(estado.archivo ? "Analizando la canción…" : "Descargando el audio de YouTube y analizando…");
-      const trabajo = await pedir("/api/trabajos", carga);
-      if (!$("titulo").value) $("titulo").value = trabajo.metadatos.titulo;
-      if (!$("artista").value || $("artista").value === "Desconocido") $("artista").value = trabajo.metadatos.artista;
-      usarTrabajo(trabajo);
-    }
-
-    // Paso 2: generar (repetible con otros datos, parámetros, secciones y recorte).
-    const datos = new FormData();
-    datos.append("teclas", teclas);
-    datos.append("dificultades", dificultades);
-    for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
-      datos.append(campo, formulario.elements[campo].value);
-    }
-    CAPAS.forEach((capa, i) => datos.append(`capa_${capa}`, valoresGlobales()[i] / 100));
-    const secciones = ajustesPorSeccion();
-    if (secciones.length) datos.append("capas_secciones", JSON.stringify(secciones));
-    const recorte = recorteVigente();
-    if (recorte) {
-      datos.append("recorte_inicio", recorte.inicio.toFixed(3));
-      datos.append("recorte_fin", recorte.fin.toFixed(3));
-      datos.append("recorte_compas", $("recorte-compas").checked ? "1" : "0");
-    }
-    datos.append("fundido", $("fundido").value);
-    const imagen = $("imagen").files[0];
-    if (imagen && !imagenUsada) datos.append("imagen", imagen);
-    mostrarEstado("Generando mapas…");
-    const json = await pedir(`/api/trabajos/${estado.trabajo.id}/generar`, datos);
-    $("imagen").value = "";
-    usarTrabajo(json);
-    if (json.recorte) estado.recorte = { inicio: json.recorte.inicio, fin: json.recorte.fin };
-    const extra = json.recorte ? ` · recorte ${formatoTiempo(json.recorte.inicio, true)}–${formatoTiempo(json.recorte.fin, true)}` : "";
-    const reanalisis = json.tiempo_analisis > 0 ? " · reanalizado con el BPM/offset nuevo" : "";
-    mostrarEstado(`Listo: ${json.mapas.length} mapas${extra}${reanalisis}.`);
-    mostrarResultados(json);
+    if (!estado.trabajo || estado.fuenteNueva) await analizar();
+    else await generar();
   } catch (error) {
     mostrarEstado(error.message, true);
   } finally {
     boton.disabled = false;
+    actualizarAccion();
   }
 });
 
@@ -366,38 +446,9 @@ formulario.addEventListener("submit", async (e) => {
 
 function mostrarResultados(json) {
   estado.resultado = json;
-  $("vacio").hidden = true;
-  $("resultados").hidden = false;
-
-  const a = json.analisis;
-  $("titulo-resultado").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo}`;
-  const datos = [
-    ["BPM", a.bpm],
-    ["Offset", `${a.offset_ms} ms`],
-    ["Duración", formatoTiempo(a.duracion)],
-    ["Secciones", a.secciones.length],
-    ["Mapa", json.recorte ? `${formatoTiempo(json.reproduccion.duracion)} (recortado)` : "completo"],
-  ];
-  $("datos-analisis").innerHTML = datos.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
-  $("leyenda-secciones").innerHTML = Object.entries(VARIABLE_ETIQUETA)
-    .map(([k, v]) => `<span><i style="background:var(${v})"></i>${NOMBRE_ETIQUETA[k]}</span>`).join("")
-    + `<span><i style="background:var(--texto)"></i>Intensidad</span>`;
-
-  const miniatura = $("miniatura");
-  estado.fondo = null;
-  if (json.fondo) {
-    miniatura.src = json.fondo;
-    miniatura.hidden = false;
-    const imagenFondo = new Image();
-    imagenFondo.onload = () => { estado.fondo = imagenFondo; dibujarCampo(); };
-    imagenFondo.src = miniatura.src;
-  } else {
-    miniatura.hidden = true;
-  }
-
-  actualizarCamposRecorte();
-  dibujarLineaTiempo();
-  renderizarSecciones();
+  $("paso-resultados").hidden = false;
+  $("resumen-resultado").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo} · `
+    + (json.recorte ? `tramo de ${formatoTiempo(json.reproduccion.duracion)}` : "canción completa");
   dibujarCapas();
 
   $("descargar-osz").href = json.osz;
@@ -495,6 +546,7 @@ function fijarBorde(borde, t, ajustar) {
   actualizarCamposRecorte();
   dibujarLineaTiempo();
   renderizarSecciones();
+  marcarCambios();
 }
 
 const lineaTiempo = $("linea-tiempo");
@@ -535,6 +587,7 @@ $("recorte-completa").addEventListener("click", () => {
   actualizarCamposRecorte();
   dibujarLineaTiempo();
   renderizarSecciones();
+  marcarCambios();
 });
 
 function dibujarLineaTiempo() {
@@ -590,7 +643,7 @@ function renderizarSecciones() {
     const ajuste = estado.secciones[i] || (estado.secciones[i] = { opcion: "global", valores: valoresGlobales() });
     const fuera = s.fin <= r.inicio + 0.01 || s.inicio >= r.fin - 0.01;
     const fila = document.createElement("div");
-    fila.className = "seccion";
+    fila.className = ajuste.opcion === "global" ? "seccion" : "seccion cambiada";
     fila.style.opacity = fuera ? "0.5" : "1";
     fila.innerHTML = `
       <span class="franja" style="background:var(${VARIABLE_ETIQUETA[s.etiqueta] || "--s-media"})"></span>
@@ -622,11 +675,12 @@ function renderizarSecciones() {
 // ---------------------------------------------------------------- capas
 
 function dibujarCapas() {
-  const json = estado.resultado;
-  if (!json) return;
+  // Antes de generar se ven las capas; después, también el instrumento destacado.
+  const json = estado.resultado || estado.trabajo;
+  if (!json || !$("capas").clientWidth) return;
   const a = json.analisis;
   const desplazamiento = json.reproduccion ? json.reproduccion.inicio * 1000 : 0;
-  const destacados = json.mapas.length ? json.mapas[0].destacados : null;
+  const destacados = json.mapas && json.mapas.length ? json.mapas[0].destacados : null;
   const [ctx, ancho, alto] = ajustarCanvas($("capas"));
   ctx.clearRect(0, 0, ancho, alto);
   const capas = CAPAS.filter((n) => a.capas && a.capas[n]).map((n) => [n, a.capas[n]]);
@@ -822,8 +876,10 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+$("capas").closest("details").addEventListener("toggle", dibujarCapas);
+
 function redibujarTodo() {
-  if (!estado.resultado) return;
+  if (!estado.trabajo) return;
   dibujarLineaTiempo();
   dibujarCapas();
   dibujarDensidad();
@@ -832,3 +888,4 @@ function redibujarTodo() {
 window.addEventListener("resize", redibujarTodo);
 
 aplicarTema(temaGuardado());
+actualizarAccion();

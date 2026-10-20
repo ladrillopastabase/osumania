@@ -11,7 +11,7 @@
       if (tema === "claro" || tema === "oscuro") document.documentElement.dataset.theme = tema === "claro" ? "light" : "dark";
     } catch (e) { /* sin almacenamiento: se usa el del sistema */ }
   </script>
-  <link rel="stylesheet" href="/static/estilos.css?v=8">
+  <link rel="stylesheet" href="/static/estilos.css?v=10">
 </head>
 <body>
   <header class="barra">
@@ -19,7 +19,7 @@
       <span class="logo" aria-hidden="true">♪</span>
       <div>
         <h1>Generador de beatmaps <span>osu!mania</span></h1>
-        <p>Audio o YouTube → mapas 4K/7K con patrones que siguen a cada instrumento</p>
+        <p>Audio o YouTube → mapas 4K/7K que siguen a cada instrumento</p>
       </div>
     </div>
     <button id="tema" type="button" class="boton-icono" title="Cambiar tema" aria-label="Cambiar tema">
@@ -27,172 +27,183 @@
     </button>
   </header>
 
-  <main class="app">
-    <!-- ============================== Panel de ajustes ============================== -->
-    <form id="formulario" class="panel">
-      <div class="panel-cuerpo">
-        <section class="bloque">
-          <h2><span class="paso">1</span> Canción</h2>
+  <form id="formulario" class="flujo" novalidate>
+    <nav class="pasos" aria-label="Pasos">
+      <a href="#paso-cancion" data-paso="cancion"><b>1</b> Canción</a>
+      <a href="#paso-estructura" data-paso="estructura"><b>2</b> Recorte</a>
+      <a href="#paso-instrumentos" data-paso="instrumentos"><b>3</b> Instrumentos</a>
+      <a href="#paso-mapas" data-paso="mapas"><b>4</b> Mapas</a>
+      <a href="#paso-resultados" data-paso="resultados"><b>5</b> Resultados</a>
+    </nav>
 
-          <div id="cancion-cargada" class="cancion-cargada" hidden>
-            <div>
-              <strong id="cancion-nombre"></strong>
-              <small id="cancion-detalle"></small>
-            </div>
-            <button type="button" id="otra-cancion" class="boton-secundario">Cambiar</button>
-          </div>
+    <!-- ===================== 1. Canción ===================== -->
+    <section id="paso-cancion" class="tarjeta">
+      <header class="tarjeta-titulo">
+        <span class="numero">1</span>
+        <div><h2>Canción</h2><p>Sube un audio o pega un enlace. Se analiza una sola vez.</p></div>
+      </header>
 
-          <div id="fuente" class="fuente">
-            <label id="zona-audio" class="zona-audio">
-              <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
-              <strong id="nombre-audio">Arrastra o elige un audio</strong>
-              <small>MP3 · WAV · FLAC · OGG (máx. 80 MB)</small>
-            </label>
-            <label class="campo">o un enlace de YouTube
-              <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
-            </label>
-          </div>
+      <div id="fuente" class="fuente">
+        <label id="zona-audio" class="zona-audio">
+          <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
+          <strong id="nombre-audio">Arrastra o elige un audio</strong>
+          <small>MP3 · WAV · FLAC · OGG (máx. 80 MB)</small>
+        </label>
+        <div class="o">o</div>
+        <label class="campo">Enlace de YouTube
+          <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
+        </label>
+      </div>
 
+      <div id="cancion-cargada" class="cancion-cargada" hidden>
+        <img id="miniatura" alt="Fondo del beatmap" hidden>
+        <div class="cancion-datos">
           <div class="dos">
-            <label class="campo">Título <input name="titulo" id="titulo" placeholder="Del archivo o video"></label>
-            <label class="campo">Artista <input name="artista" id="artista" placeholder="Desconocido"></label>
+            <label class="campo">Título <input name="titulo" id="titulo"></label>
+            <label class="campo">Artista <input name="artista" id="artista"></label>
           </div>
-          <label class="campo">Creador <input name="creador" placeholder="Generador osu!mania"></label>
-          <label class="campo"><span>Imagen de fondo <small>(opcional)</small></span>
-            <input id="imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,.webp,image/*">
-          </label>
-          <p class="ayuda">Sin imagen se usa la miniatura de YouTube o la portada del audio.</p>
-        </section>
+          <div class="dos">
+            <label class="campo">Creador <input name="creador" placeholder="Generador osu!mania"></label>
+            <label class="campo">Imagen de fondo <input id="imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,.webp,image/*"></label>
+          </div>
+          <dl id="datos-analisis" class="datos"></dl>
+        </div>
+        <button type="button" id="otra-cancion" class="boton-secundario">Cambiar canción</button>
+      </div>
+    </section>
 
-        <section class="bloque">
-          <h2><span class="paso">2</span> Mapas</h2>
-          <div class="fichas" role="group" aria-label="Modos">
+    <!-- ===================== 2. Recorte ===================== -->
+    <section id="paso-estructura" class="tarjeta bloqueada">
+      <header class="tarjeta-titulo">
+        <span class="numero">2</span>
+        <div><h2>Recorte <small>(opcional)</small></h2><p>Arrastra los bordes para usar solo una parte de la canción.</p></div>
+      </header>
+      <p class="aviso-bloqueo">Disponible después de analizar la canción.</p>
+      <div class="contenido-paso">
+        <canvas id="linea-tiempo" height="110" aria-label="Línea de tiempo con secciones y recorte"></canvas>
+        <div id="leyenda-secciones" class="leyenda"></div>
+        <div class="recorte-controles">
+          <label class="campo-corto">Inicio <input id="recorte-inicio" type="text" inputmode="decimal" value="0:00.0"></label>
+          <label class="campo-corto">Fin <input id="recorte-fin" type="text" inputmode="decimal" value="0:00.0"></label>
+          <label class="campo-corto">Fundido final
+            <select id="fundido">
+              <option value="0">Sin fundido</option>
+              <option value="1">1 s</option>
+              <option value="2" selected>2 s</option>
+              <option value="4">4 s</option>
+            </select>
+          </label>
+          <label class="ficha"><input id="recorte-compas" type="checkbox" checked> Ajustar a compás</label>
+          <button type="button" id="recorte-completa" class="boton-secundario">Usar la canción completa</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===================== 3. Instrumentos ===================== -->
+    <section id="paso-instrumentos" class="tarjeta bloqueada">
+      <header class="tarjeta-titulo">
+        <span class="numero">3</span>
+        <div><h2>Instrumentos</h2><p>Qué siguen las notas: primero para toda la canción y, si quieres, distinto en alguna sección.</p></div>
+      </header>
+      <p class="aviso-bloqueo">Disponible después de analizar la canción.</p>
+      <div class="contenido-paso instrumentos">
+        <div class="global">
+          <h3>Toda la canción</h3>
+          <div class="fichas preajustes" id="preajustes-globales"></div>
+          <div id="controles-globales" class="controles-capas"></div>
+        </div>
+        <div class="por-seccion">
+          <h3>Por sección <small>(opcional)</small></h3>
+          <p class="ayuda">Cada sección usa lo de «Toda la canción» salvo que elijas otra cosa.</p>
+          <div id="secciones" class="secciones"></div>
+        </div>
+        <details class="capas-detalle">
+          <summary>Ver las capas detectadas y el instrumento destacado</summary>
+          <canvas id="capas" height="170"></canvas>
+        </details>
+      </div>
+    </section>
+
+    <!-- ===================== 4. Mapas ===================== -->
+    <section id="paso-mapas" class="tarjeta bloqueada">
+      <header class="tarjeta-titulo">
+        <span class="numero">4</span>
+        <div><h2>Mapas</h2><p>Modos, dificultades y estilo.</p></div>
+      </header>
+      <p class="aviso-bloqueo">Disponible después de analizar la canción.</p>
+      <div class="contenido-paso mapas-opciones">
+        <div>
+          <h3>Modos</h3>
+          <div class="fichas">
             <label class="ficha"><input type="checkbox" name="teclas" value="4" checked> 4K</label>
             <label class="ficha"><input type="checkbox" name="teclas" value="7"> 7K</label>
           </div>
-          <div class="fichas" role="group" aria-label="Dificultades">
+          <h3>Dificultades</h3>
+          <div class="fichas">
             <label class="ficha"><input type="checkbox" name="dificultades" value="Easy" checked> Easy</label>
             <label class="ficha"><input type="checkbox" name="dificultades" value="Normal" checked> Normal</label>
             <label class="ficha"><input type="checkbox" name="dificultades" value="Hard" checked> Hard</label>
             <label class="ficha"><input type="checkbox" name="dificultades" value="Insane" checked> Insane</label>
           </div>
+        </div>
+        <div>
+          <h3>Estilo</h3>
           <label class="deslizador"><span>Densidad</span>
             <input type="range" name="densidad" min="0.5" max="1.8" step="0.1" value="1.0">
             <output id="v-densidad">1.0×</output></label>
-          <label class="deslizador"><span>Holds <small>(&gt;1× estilo LN)</small></span>
+          <label class="deslizador"><span>Holds</span>
             <input type="range" name="holds" min="0" max="2.5" step="0.1" value="1.0">
             <output id="v-holds">1.0×</output></label>
-        </section>
-
-        <section class="bloque">
-          <h2><span class="paso">3</span> Instrumentos <small>toda la canción</small></h2>
-          <div class="fichas preajustes" id="preajustes-globales"></div>
-          <div id="controles-globales" class="controles-capas"></div>
-          <p class="ayuda">Cuánto aporta cada instrumento. Las notas siguen al instrumento destacado de cada compás; puedes cambiarlo por sección a la derecha.</p>
-        </section>
-
-        <details class="bloque">
-          <summary><h2>Avanzado</h2></summary>
-          <div class="dos">
-            <label class="campo">BPM manual <input name="bpm" type="number" step="0.01" min="30" max="400" placeholder="Automático"></label>
-            <label class="campo">Offset (ms) <input name="offset_ms" type="number" step="1" placeholder="Automático"></label>
-          </div>
-          <label class="campo">Semilla <input name="semilla" type="number" step="1" value="0"></label>
-          <p class="ayuda">Si el BPM sale a la mitad o al doble, escríbelo. La semilla cambia los patrones manteniendo el ritmo.</p>
-        </details>
-      </div>
-
-      <div class="panel-pie">
-        <button id="boton-generar" type="submit" class="boton-principal">Generar beatmaps</button>
-        <p id="estado" class="estado" role="status"></p>
-      </div>
-    </form>
-
-    <!-- ============================== Resultados ============================== -->
-    <section class="contenido">
-      <div id="vacio" class="vacio">
-        <h2>Empieza por una canción</h2>
-        <ol>
-          <li>Sube un audio o pega un enlace de YouTube.</li>
-          <li>Elige modos, dificultades y cuánto sigue cada instrumento.</li>
-          <li>Genera, recorta, ajusta por sección y regenera sin volver a descargar.</li>
-        </ol>
-      </div>
-
-      <div id="resultados" class="resultados" hidden>
-        <article class="tarjeta">
-          <div class="cabecera-cancion">
-            <img id="miniatura" alt="Fondo del beatmap" hidden>
-            <div class="info-cancion">
-              <h2 id="titulo-resultado"></h2>
-              <dl id="datos-analisis" class="datos"></dl>
+          <p class="ayuda">Holds: 0 = ninguno · 1 = en las notas largas · más de 1 = estilo LN.</p>
+          <details>
+            <summary>Avanzado</summary>
+            <div class="dos">
+              <label class="campo">BPM manual <input name="bpm" type="number" step="0.01" min="30" max="400" placeholder="Automático"></label>
+              <label class="campo">Offset (ms) <input name="offset_ms" type="number" step="1" placeholder="Automático"></label>
             </div>
-          </div>
-
-          <canvas id="linea-tiempo" height="110" aria-label="Línea de tiempo con secciones y recorte"></canvas>
-          <div id="leyenda-secciones" class="leyenda"></div>
-
-          <div class="recorte">
-            <h3>Recorte</h3>
-            <div class="recorte-controles">
-              <label class="campo-corto">Inicio <input id="recorte-inicio" type="text" inputmode="decimal" value="0:00.0"></label>
-              <label class="campo-corto">Fin <input id="recorte-fin" type="text" inputmode="decimal" value="0:00.0"></label>
-              <label class="campo-corto">Fundido final
-                <select id="fundido">
-                  <option value="0">Sin fundido</option>
-                  <option value="1">1 s</option>
-                  <option value="2" selected>2 s</option>
-                  <option value="4">4 s</option>
-                </select>
-              </label>
-              <label class="ficha"><input id="recorte-compas" type="checkbox" checked> Ajustar a compás</label>
-              <button type="button" id="recorte-completa" class="boton-secundario">Canción completa</button>
-            </div>
-            <p class="ayuda">Arrastra los bordes en la línea de tiempo. El recorte se aplica al regenerar: el .osz lleva solo ese tramo.</p>
-          </div>
-        </article>
-
-        <article class="tarjeta">
-          <div class="titulo-fila">
-            <h2>Instrumentos por sección</h2>
-            <small class="pista">Se aplica al regenerar</small>
-          </div>
-          <div id="secciones" class="secciones"></div>
-          <h3 class="subtitulo">Capas detectadas <small>· arriba, el instrumento destacado que siguen las notas</small></h3>
-          <canvas id="capas" height="170"></canvas>
-        </article>
-
-        <article class="tarjeta">
-          <div class="titulo-fila">
-            <h2>Mapas generados</h2>
-            <a id="descargar-osz" class="boton-principal boton-chico" href="#">Descargar .osz</a>
-          </div>
-          <div id="lista-mapas" class="lista-mapas"></div>
-        </article>
-
-        <article class="tarjeta">
-          <div class="titulo-fila">
-            <h2>Previsualización</h2>
-            <select id="mapa-vista" aria-label="Mapa a previsualizar"></select>
-          </div>
-          <div class="vista">
-            <canvas id="campo" width="420" height="560"></canvas>
-            <div class="controles">
-              <button id="reproducir" type="button" class="boton-principal">▶ Reproducir</button>
-              <input id="posicion" type="range" min="0" max="1000" value="0" aria-label="Posición">
-              <span id="reloj">0:00 / 0:00</span>
-              <label class="deslizador"><span>Velocidad</span>
-                <input id="velocidad" type="range" min="10" max="40" value="22"><output></output></label>
-              <canvas id="densidad-mapa" height="60"></canvas>
-              <p class="ayuda">Espacio: reproducir/pausar. Clic en la barra de densidad para saltar.</p>
-            </div>
-          </div>
-          <audio id="reproductor" preload="auto"></audio>
-        </article>
+            <label class="campo">Semilla <input name="semilla" type="number" step="1" value="0"></label>
+            <p class="ayuda">Si el BPM sale a la mitad o al doble, escríbelo (se vuelve a analizar). La semilla cambia los patrones manteniendo el ritmo.</p>
+          </details>
+        </div>
       </div>
     </section>
-  </main>
 
-  <script src="/static/app.js?v=9"></script>
+    <!-- ===================== 5. Resultados ===================== -->
+    <section id="paso-resultados" class="tarjeta" hidden>
+      <header class="tarjeta-titulo">
+        <span class="numero">5</span>
+        <div><h2>Resultados</h2><p id="resumen-resultado"></p></div>
+        <a id="descargar-osz" class="boton-principal" href="#">Descargar .osz</a>
+      </header>
+      <div id="lista-mapas" class="lista-mapas"></div>
+      <div class="vista">
+        <div class="vista-campo">
+          <select id="mapa-vista" aria-label="Mapa a previsualizar"></select>
+          <canvas id="campo" width="420" height="560"></canvas>
+        </div>
+        <div class="controles">
+          <button id="reproducir" type="button" class="boton-principal">▶ Reproducir</button>
+          <input id="posicion" type="range" min="0" max="1000" value="0" aria-label="Posición">
+          <span id="reloj">0:00 / 0:00</span>
+          <label class="deslizador"><span>Velocidad</span>
+            <input id="velocidad" type="range" min="10" max="40" value="22"><output></output></label>
+          <canvas id="densidad-mapa" height="60"></canvas>
+          <p class="ayuda">Espacio: reproducir/pausar. Clic en la barra de densidad para saltar.</p>
+        </div>
+      </div>
+      <audio id="reproductor" preload="auto"></audio>
+    </section>
+
+    <!-- ===================== Barra de acción (siempre visible) ===================== -->
+    <div class="accion">
+      <div class="accion-texto">
+        <span id="cambios" class="cambios" hidden>Cambios sin aplicar</span>
+        <p id="estado" class="estado" role="status">Elige una canción para empezar.</p>
+      </div>
+      <button id="boton-accion" type="submit" class="boton-principal">Analizar canción</button>
+    </div>
+  </form>
+
+  <script src="/static/app.js?v=11"></script>
 </body>
 </html>
