@@ -13,7 +13,7 @@ from motor.analisis import analizar
 from motor.audio import EXTENSIONES_ADMITIDAS, ErrorAudio, cargar_audio, preparar_audio_osu
 from motor.dificultades import NOMBRES as DIFICULTADES
 from motor.exportador import Metadatos, empaquetar_osz, exportar_osu, nombre_archivo, nombre_version
-from motor.generador import OpcionesGeneracion, generar_mapa
+from motor.generador import PESOS_CAPA_DEFECTO, OpcionesGeneracion, generar_mapa
 from motor.imagen import EXTENSIONES_IMAGEN, elegir_fondo
 from motor.validador import validar
 from motor.youtube import descargar_audio, es_url_youtube
@@ -191,6 +191,13 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
     densidad = _numero("densidad", 1.0)
     holds = _numero("holds", 1.0)
     semilla = _numero("semilla", 0, int)
+    capas = {}
+    for capa in PESOS_CAPA_DEFECTO:
+        valor = _numero(f"capa_{capa}")
+        if valor is not None:
+            capas[capa] = valor
+    if capas and max(capas.get(c, PESOS_CAPA_DEFECTO[c]) for c in PESOS_CAPA_DEFECTO) < 0.02:
+        abort(400, "Al menos un instrumento tiene que tener influencia.")
 
     # Datos de la canción editables en cada generación.
     datos["titulo"] = request.form.get("titulo", "").strip() or datos["titulo"]
@@ -214,7 +221,7 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
         for dificultad in dificultades:
             opciones = OpcionesGeneracion(teclas=k, dificultad=dificultad, percusion=percusion,
                                           melodia=melodia, densidad=densidad, holds=holds,
-                                          semilla=semilla)
+                                          semilla=semilla, capas=capas)
             mapa = generar_mapa(analisis, opciones)
             informe = validar(mapa, analisis.duracion)
             version = nombre_version(mapa)
@@ -232,6 +239,7 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
                 "validacion": informe,
                 "notas": [[round(n.tiempo * 1000), n.columna,
                            round(n.fin * 1000) if n.es_hold else -1] for n in mapa.notas],
+                "destacados": [[round(a * 1000), round(b * 1000), capa] for a, b, capa in mapa.destacados],
             })
 
     datos["osz"] = nombre_archivo(meta, "set")[:-len(" [set].osu")] + ".osz"

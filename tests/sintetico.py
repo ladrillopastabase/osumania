@@ -167,3 +167,82 @@ def cancion_realista(bpm=170.0, offset=0.6, sr=SR, humano=0.0, semilla=5, seccio
         senal += rng.standard_normal(n) * 0.01 * np.abs(senal).max()
     senal = senal / np.abs(senal).max()
     return senal.astype(np.float32), sorted(eventos)
+
+
+# ---------------------------------------------------------------------------
+# Canción con instrumentos que se turnan el protagonismo
+# ---------------------------------------------------------------------------
+
+def bajo(midi, dur, sr=SR):
+    t = np.arange(int(sr * dur)) / sr
+    f = 440.0 * 2 ** ((midi - 69) / 12)
+    onda = np.sin(2 * np.pi * f * t) + 0.5 * np.sin(2 * np.pi * 2 * f * t) + 0.25 * np.sin(2 * np.pi * 3 * f * t)
+    envolvente = np.minimum(1, t / 0.005) * np.exp(-t * 2.0)
+    return _desvanecer(0.6 * onda * envolvente)
+
+
+def voz(midi, dur, sr=SR):
+    """Nota cantada: ataque suave, se sostiene toda la duración, con vibrato."""
+    t = np.arange(int(sr * dur)) / sr
+    f = 440.0 * 2 ** ((midi - 69) / 12) * (1 + 0.006 * np.sin(2 * np.pi * 5.5 * t))
+    fase = 2 * np.pi * np.cumsum(f) / sr
+    onda = sum((0.7 ** h) * np.sin(fase * (h + 1)) for h in range(5))
+    envolvente = np.minimum(1, t / 0.03) * np.minimum(1, (dur - t) / 0.05)
+    return _desvanecer(0.3 * onda * envolvente)
+
+
+def cancion_capas(bpm=150.0, offset=0.5, sr=SR):
+    """Tres partes de 8 compases: solo de bajo, batería fuerte y voz con notas largas.
+
+    Devuelve (señal, eventos, partes) con partes = {nombre: (inicio, fin)}; los
+    eventos de la voz llevan su duración: (tiempo, "voz", duración).
+    """
+    paso = 60.0 / bpm / 4
+    compas = 16 * paso
+    total = offset + 24 * compas + 1.0
+    senal = np.zeros(int(total * sr))
+    eventos = []
+    k, s, p = bombo(sr), caja(sr), platillo(sr)
+    linea_bajo = [(0, 36, 2), (2, 38, 2), (4, 40, 2), (6, 43, 2), (8, 45, 2), (10, 43, 2), (12, 40, 2), (14, 38, 2)]
+    voz_larga = [(0, 72, 8), (8, 74, 4), (12, 76, 4)]
+
+    def poner(t, sonido, ganancia):
+        a = int(t * sr)
+        senal[a:a + sonido.size] += ganancia * sonido[: max(0, senal.size - a)]
+
+    partes = {}
+    for parte, compases in (("bajo", range(0, 8)), ("bateria", range(8, 16)), ("voz", range(16, 24))):
+        partes[parte] = (offset + compases[0] * compas, offset + (compases[-1] + 1) * compas)
+        for c in compases:
+            t0 = offset + c * compas
+            for paso_i in range(16):
+                t = t0 + paso_i * paso
+                if parte == "bajo":
+                    if paso_i % 8 == 0:
+                        poner(t, k, 0.35)
+                        eventos.append((t, "bombo", 0))
+                elif parte == "bateria":
+                    if paso_i in (0, 3, 8, 11):
+                        poner(t, k, 1.0)
+                        eventos.append((t, "bombo", 0))
+                    if paso_i in (4, 12):
+                        poner(t, s, 0.9)
+                        eventos.append((t, "caja", 0))
+                    poner(t, p, 0.6)
+                    eventos.append((t, "platillo", 0))
+                else:
+                    if paso_i % 4 == 0:
+                        poner(t, k, 0.4)
+                        eventos.append((t, "bombo", 0))
+            if parte == "bajo":
+                for paso_i, nota, dur in linea_bajo:
+                    poner(t0 + paso_i * paso, bajo(nota, dur * paso * 0.95), 1.0)
+                    eventos.append((t0 + paso_i * paso, "bajo", nota))
+            elif parte == "voz":
+                for paso_i, nota, dur in voz_larga:
+                    poner(t0 + paso_i * paso, voz(nota, dur * paso * 0.97), 1.0)
+                    eventos.append((t0 + paso_i * paso, "voz", dur * paso))
+            else:
+                poner(t0, pad([48, 55, 64], 16 * paso), 0.5)
+    senal = senal / np.abs(senal).max()
+    return senal.astype(np.float32), sorted(eventos), partes

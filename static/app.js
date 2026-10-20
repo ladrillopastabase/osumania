@@ -80,21 +80,20 @@ for (const nombre of ["densidad", "holds"]) {
   control.addEventListener("input", () => { salida.textContent = `${Number(control.value).toFixed(1)}×`; });
 }
 
-// Percusión y melodía: deslizadores en % y preajustes.
+// Influencia de cada capa: deslizadores en % y preajustes.
+const CAPAS = ["bombo", "caja", "platillos", "bajo", "melodia"];
 function actualizarMezcla() {
-  for (const nombre of ["percusion", "melodia"]) {
-    $(`v-${nombre}`).textContent = `${formulario.elements[nombre].value}%`;
+  for (const capa of CAPAS) {
+    $(`v-capa_${capa}`).textContent = `${formulario.elements[`capa_${capa}`].value}%`;
   }
-  const actual = `${formulario.elements.percusion.value},${formulario.elements.melodia.value}`;
+  const actual = CAPAS.map((c) => formulario.elements[`capa_${c}`].value).join(",");
   document.querySelectorAll("[data-mezcla]").forEach((b) => b.classList.toggle("activa", b.dataset.mezcla === actual));
 }
-for (const nombre of ["percusion", "melodia"]) {
-  formulario.elements[nombre].addEventListener("input", actualizarMezcla);
+for (const capa of CAPAS) {
+  formulario.elements[`capa_${capa}`].addEventListener("input", actualizarMezcla);
 }
 document.querySelectorAll("[data-mezcla]").forEach((boton) => boton.addEventListener("click", () => {
-  const [p, m] = boton.dataset.mezcla.split(",");
-  formulario.elements.percusion.value = p;
-  formulario.elements.melodia.value = m;
+  boton.dataset.mezcla.split(",").forEach((v, i) => { formulario.elements[`capa_${CAPAS[i]}`].value = v; });
   actualizarMezcla();
 }));
 actualizarMezcla();
@@ -142,8 +141,8 @@ formulario.addEventListener("submit", async (e) => {
     mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
     return;
   }
-  if (Number(formulario.elements.percusion.value) + Number(formulario.elements.melodia.value) === 0) {
-    mostrarEstado("La percusión y la melodía no pueden estar ambas en 0%.", true);
+  if (CAPAS.every((c) => Number(formulario.elements[`capa_${c}`].value) === 0)) {
+    mostrarEstado("Al menos un instrumento tiene que tener influencia.", true);
     return;
   }
   const teclas = valoresMarcados("teclas");
@@ -179,8 +178,9 @@ formulario.addEventListener("submit", async (e) => {
     for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
       datos.append(campo, formulario.elements[campo].value);
     }
-    datos.append("percusion", Number(formulario.elements.percusion.value) / 100);
-    datos.append("melodia", Number(formulario.elements.melodia.value) / 100);
+    for (const capa of CAPAS) {
+      datos.append(`capa_${capa}`, Number(formulario.elements[`capa_${capa}`].value) / 100);
+    }
     const imagen = $("imagen").files[0];
     if (imagen && !imagenUsada) datos.append("imagen", imagen);
     mostrarEstado("Generando mapas…");
@@ -228,7 +228,7 @@ function mostrarResultados(json) {
     .map(([k, c]) => `<span><i style="background:${c}"></i>${k}</span>`).join("")
     + `<span><i style="background:#ffffff"></i>intensidad</span>`;
 
-  dibujarCapas(a);
+  dibujarCapas(a, json.mapas.length ? json.mapas[0].destacados : null);
   const miniatura = $("miniatura");
   estado.fondo = null;
   if (json.fondo) {
@@ -307,19 +307,34 @@ const NOMBRES_CAPA = {
   bombo: "Bombo", caja: "Caja", platillos: "Platillos", bajo: "Bajo", melodia: "Melodía / voz",
 };
 
-function dibujarCapas(a) {
+const COLORES_CAPA = {
+  bombo: [255, 79, 139], caja: [255, 169, 77], platillos: [255, 224, 102], bajo: [77, 171, 247], melodia: [177, 151, 252],
+};
+
+function dibujarCapas(a, destacados) {
   const [ctx, ancho, alto] = ajustarCanvas($("capas"));
   ctx.clearRect(0, 0, ancho, alto);
-  const orden = ["bombo", "caja", "platillos", "bajo", "melodia"];
-  const capas = orden.filter((n) => a.capas && a.capas[n]).map((n) => [n, a.capas[n]]);
+  const capas = CAPAS.filter((n) => a.capas && a.capas[n]).map((n) => [n, a.capas[n]]);
   if (!capas.length) return;
-  const etiqueta = Math.min(110, ancho * 0.3);
-  const fila = alto / capas.length;
+  const etiqueta = Math.min(120, ancho * 0.3);
+  const filas = capas.length + (destacados ? 1 : 0);
+  const fila = alto / filas;
+  const escalaX = (ancho - etiqueta) / a.duracion;
   ctx.font = "12px system-ui, sans-serif";
   ctx.textBaseline = "middle";
+  if (destacados) {
+    // Primera fila: qué instrumento lleva cada tramo (lo que siguen las notas).
+    ctx.fillStyle = "#ece9f6";
+    ctx.fillText("Destacado", 4, fila / 2);
+    for (const [inicio, fin, capa] of destacados) {
+      const c = COLORES_CAPA[capa] || [128, 128, 128];
+      ctx.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+      ctx.fillRect(etiqueta + (inicio / 1000) * escalaX, 3, Math.max(1, ((fin - inicio) / 1000) * escalaX - 1), fila - 6);
+    }
+  }
   capas.forEach(([nombre, capa], i) => {
-    const y = i * fila;
-    const color = capa.familia === "percusion" ? [255, 102, 170] : [102, 204, 255];
+    const y = (i + (destacados ? 1 : 0)) * fila;
+    const color = COLORES_CAPA[nombre];
     ctx.fillStyle = "#a39fb8";
     ctx.fillText(`${NOMBRES_CAPA[nombre] || nombre} (${capa.onsets})`, 4, y + fila / 2);
     const valores = capa.actividad;
@@ -509,7 +524,7 @@ document.addEventListener("keydown", (e) => {
 window.addEventListener("resize", () => {
   if (!estado.resultado) return;
   dibujarLineaTiempo(estado.resultado.analisis);
-  dibujarCapas(estado.resultado.analisis);
+  dibujarCapas(estado.resultado.analisis, estado.resultado.mapas[0]?.destacados);
   dibujarDensidad();
   dibujarCampo();
 });

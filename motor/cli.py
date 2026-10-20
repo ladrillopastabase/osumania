@@ -8,7 +8,7 @@ from .analisis import analizar
 from .audio import ErrorAudio, cargar_audio, preparar_audio_osu
 from .dificultades import NOMBRES
 from .exportador import Metadatos, empaquetar_osz, exportar_osu, nombre_archivo, nombre_version
-from .generador import OpcionesGeneracion, generar_mapa
+from .generador import PESOS_CAPA_DEFECTO, OpcionesGeneracion, generar_mapa
 from .imagen import elegir_fondo
 from .validador import validar
 
@@ -20,6 +20,8 @@ def main(argv=None) -> int:
     lector.add_argument("--dificultades", nargs="+", default=NOMBRES, choices=NOMBRES)
     lector.add_argument("--percusion", type=float, default=0.5, help="0..1, peso de la batería")
     lector.add_argument("--melodia", type=float, default=0.5, help="0..1, peso de la melodía")
+    lector.add_argument("--capas", nargs="+", default=[], metavar="CAPA=PESO",
+                        help="influencia de cada capa 0..1, p. ej. bombo=1 caja=0.9 bajo=0.3 melodia=1")
     lector.add_argument("--imagen", type=Path, help="imagen de fondo (si no, la portada del audio)")
     lector.add_argument("--densidad", type=float, default=1.0)
     lector.add_argument("--holds", type=float, default=1.0)
@@ -32,6 +34,16 @@ def main(argv=None) -> int:
     lector.add_argument("--salida", type=Path, default=Path("salida"))
     args = lector.parse_args(argv)
 
+    capas = {}
+    for par in args.capas:
+        nombre, _, valor = par.partition("=")
+        try:
+            if nombre not in PESOS_CAPA_DEFECTO:
+                raise ValueError
+            capas[nombre] = float(valor)
+        except ValueError:
+            print(f"Error: valor inválido en --capas: {par}", file=sys.stderr)
+            return 1
     try:
         senal, sr = cargar_audio(args.audio)
     except ErrorAudio as error:
@@ -51,7 +63,7 @@ def main(argv=None) -> int:
         for dificultad in args.dificultades:
             mapa = generar_mapa(analisis, OpcionesGeneracion(
                 teclas=k, dificultad=dificultad, percusion=args.percusion, melodia=args.melodia,
-                densidad=args.densidad,
+                densidad=args.densidad, capas=capas,
                 holds=args.holds, semilla=args.semilla))
             informe = validar(mapa, analisis.duracion)
             nombre = nombre_archivo(meta, nombre_version(mapa))

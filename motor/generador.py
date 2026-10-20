@@ -35,8 +35,12 @@ from .analisis import Analisis
 from .capas import MELODIA, PERCUSION
 from .dificultades import PerfilDificultad, perfil as obtener_perfil
 
-# Importancia de cada capa dentro de su familia.
-_PESO_CAPA = {"bombo": 1.0, "caja": 0.9, "platillos": 0.5, "melodia": 1.0, "bajo": 0.6}
+# Importancia por defecto de cada capa (el usuario puede cambiarla, 0..1).
+PESOS_CAPA_DEFECTO = {"bombo": 1.0, "caja": 0.9, "platillos": 0.5, "bajo": 0.6, "melodia": 1.0}
+# El instrumento destacado del compás pesa más; el resto, un poco menos.
+_REFUERZO_DESTACADO = 1.6
+_ATENUACION_RESTO = 0.8
+_ATAQUES_PLENOS = 4.0  # fuerza de ataques por segundo que cuenta como actividad plena
 _PESO_CAMBIO_MELODICO = 0.6
 _BONO_NIVEL = {0: 0.15, 1: 0.1, 2: 0.05, 3: 0.0}
 _FACTOR_SECCION = {"tranquila": 0.55, "media": 0.9, "intensa": 1.15, "clímax": 1.45}
@@ -66,15 +70,29 @@ class OpcionesGeneracion:
     densidad: float = 1.0
     holds: float = 1.0
     semilla: int = 0
+    capas: dict | None = None  # peso de cada capa, 0..1 (por defecto PESOS_CAPA_DEFECTO)
 
     def __post_init__(self):
+        pesos = dict(PESOS_CAPA_DEFECTO)
+        for nombre, valor in (self.capas or {}).items():
+            if nombre not in pesos:
+                raise ValueError(f"Capa desconocida: {nombre}")
+            pesos[nombre] = float(np.clip(valor, 0.0, 1.0))
+        self.capas = pesos
         if self.teclas not in (4, 7):
             raise ValueError("Solo se admiten 4K y 7K.")
         self.percusion = float(np.clip(self.percusion, 0.0, 1.0))
         self.melodia = float(np.clip(self.melodia, 0.0, 1.0))
         if self.percusion + self.melodia < 0.05:
             raise ValueError("La percusión y la melodía no pueden estar ambas en cero.")
+        if max(self.peso(c) for c in self.capas) < 0.02:
+            raise ValueError("Todas las capas están en cero.")
         self.densidad = float(np.clip(self.densidad, 0.3, 2.5))
+
+    def peso(self, capa: str) -> float:
+        """Peso efectivo de una capa: control de la capa × control de su familia."""
+        familia = self.percusion if capa in PERCUSION else self.melodia
+        return 2.0 * familia * self.capas.get(capa, 0.0)
         self.holds = float(np.clip(self.holds, 0.0, 3.0))
 
 
@@ -86,6 +104,7 @@ class Mapa:
     notas: list = field(default_factory=list)
     divisor_editor: int = 4
     frases: list = field(default_factory=list)  # (tipo de patrón, cantidad de eventos)
+    destacados: list = field(default_factory=list)  # (inicio, fin, capa) por tramos
 
 
 @dataclass
@@ -96,11 +115,26 @@ class _Evento:
     nivel: int        # 0 tiempo fuerte, 1 pulso, 2 medio pulso, 3 subdivisión menor
     capas: dict = field(default_factory=dict)  # fuerza del ataque en cada capa
     cambio: float = 0.0   # cambio de altura melódica
+    cambio_bajo: float = 0.0  # cambio de altura de la línea de bajo
     altura: float = 60.0
     confianza: float = 0.0
     saliencia: float = 0.0
     melodico: float = 0.0  # 0 = solo percusión, 1 = solo melodía
     relleno: bool = False   # nota en el pulso para no dejar un hueco con música sonando
+    lider: str | None = None  # capa que más aporta a este evento
+    destacado: str | None = None  # instrumento destacado del compás
+    aportes: dict = field(default_factory=dict)  # aporte de cada capa a la saliencia
+    atribuidas: dict = field(default_factory=dict)  # fuerza por capa tras resolver bombo/bajo
+
+    def capa_sostenida(self) -> str | None:
+        """Capa melódica cuya duración debe seguir un hold que empiece aquí."""
+        if self.lider in MELODIA:
+            return self.lider
+        if self.destacado in MELODIA:
+            return self.destacado
+        fuerzas = {c: self.fuerza(c) for c in MELODIA}
+        mejor = max(fuerzas, key=fuerzas.get)
+        return mejor if fuerzas[mejor] > 0 else None
     hold_hasta: float = 0.0  # si > 0, el evento debería sostenerse hasta este tiempo
 
     def fuerza(self, capa: str) -> float:
@@ -124,14 +158,18 @@ def _usa_tresillos(analisis: Analisis, inicio: float, periodo: float) -> bool:
     return error_tercios < 0.5 * error_cuartos
 
 
-def _cambio_melodico(analisis: Analisis, t: float) -> float:
-    confianza = analisis.maximo(analisis.confianza_melodia, t + 0.02, 0.02)
+def _cambio_melodico(analisis: Analisis, t: float, bajo: bool = False) -> float:
+    altura = analisis.altura_bajo if bajo else analisis.altura
+    confianzas = analisis.confianza_bajo if bajo else analisis.confianza_melodia
+    if altura is None:
+        return 0.0
+    confianza = analisis.maximo(confianzas, t + 0.02, 0.02)
     if confianza < 0.25:
         return 0.0
     # La ventana de altura dura ~90 ms: se compara justo antes del ataque con
     # un punto donde la ventana ya cubre casi solo la nota nueva.
-    antes = analisis.valor(analisis.altura, t - 0.045)
-    despues = analisis.valor(analisis.altura, t + 0.05)
+    antes = analisis.valor(altura, t - 0.045)
+    despues = analisis.valor(altura, t + 0.05)
     salto = abs(despues - antes)
     if salto < 0.5:
         return 0.0
@@ -190,29 +228,107 @@ def construir_eventos(analisis: Analisis, perfil: PerfilDificultad,
         if evento is None:
             evento = eventos[clave] = _Evento(float(tiempo), compas, posicion, nivel)
         evento.cambio = max(evento.cambio, _cambio_melodico(analisis, t))
+        evento.cambio_bajo = max(evento.cambio_bajo, _cambio_melodico(analisis, t, bajo=True))
         evento.capas[capa] = max(evento.capas.get(capa, 0.0), fuerza)
 
     ordenados = sorted(eventos.values(), key=lambda e: e.tiempo)
     _atenuar_colas(ordenados)
 
-    # La percusión y la melodía se combinan con los pesos elegidos por el usuario.
-    peso_p, peso_m = 2 * opciones.percusion, 2 * opciones.melodia
+    # Cada capa aporta según su fuerza, el peso que eligió el usuario y si es el
+    # instrumento destacado del compás (que se calcula con una primera pasada).
     for e in ordenados:
+        aplicar_aportes(analisis, e, opciones, {})
+    destacados = instrumentos_destacados(analisis, ordenados, opciones)
+    for e in ordenados:
+        aplicar_aportes(analisis, e, opciones, destacados)
+        e.saliencia = e.saliencia + _BONO_NIVEL[e.nivel] * perfil.peso_metrico * min(1.0, e.saliencia * 4)
+    return ordenados
+
+
+def aplicar_aportes(analisis: Analisis, e: _Evento, opciones: "OpcionesGeneracion",
+                    destacados: dict) -> None:
+    fuerzas = {c: e.fuerza(c) for c in PERCUSION + MELODIA}
+    # Bombo y bajo comparten registro. Una nota real de bajo cambia de altura; la
+    # cola de un bombo 808 no. Así se decide a quién atribuir el ataque grave.
+    if fuerzas["bajo"] and fuerzas["bombo"]:
+        if e.cambio_bajo >= 0.1:
+            if fuerzas["bombo"] < fuerzas["bajo"]:
+                fuerzas["bombo"] *= 0.15  # el "golpe" es la pulsación del bajo
+        elif fuerzas["bombo"] >= 0.5 * fuerzas["bajo"]:
+            fuerzas["bajo"] *= 0.3
+    # Un cambio de altura sin ataque detectado también es una nota de la melodía.
+    fuerzas["melodia"] = max(fuerzas["melodia"], _PESO_CAMBIO_MELODICO * e.cambio)
+    e.atribuidas = dict(fuerzas)
+    destacado = destacados.get(e.compas)
+    e.destacado = destacado
+    aportes = {}
+    for capa, fuerza in fuerzas.items():
+        factor = 1.0
+        if destacado is not None:
+            # Solo se refuerzan ataques reales: un roce débil del destacado no se vuelve nota.
+            if capa == destacado:
+                factor = _REFUERZO_DESTACADO if fuerza >= 0.2 else 1.0
+            else:
+                factor = _ATENUACION_RESTO
+        aportes[capa] = opciones.peso(capa) * fuerza * factor
+    total = sum(aportes.values())
+    maximo = max(aportes.values())
+    e.aportes = aportes
+    e.lider = max(aportes, key=aportes.get) if maximo > 0 else destacado
+    e.saliencia = maximo + 0.25 * (total - maximo)
+    e.melodico = sum(aportes[c] for c in MELODIA) / total if total > 0 else 0.0
+    # Si lidera el bajo (en el evento, o en el compás sin que la melodía lo
+    # dispute), el contorno que se dibuja es el de la línea de bajo.
+    sigue_bajo = e.lider == "bajo" or (destacado == "bajo" and e.lider != "melodia")
+    if sigue_bajo and analisis.altura_bajo is not None:
+        e.altura = analisis.valor(analisis.altura_bajo, e.tiempo + 0.03)
+        e.confianza = analisis.maximo(analisis.confianza_bajo, e.tiempo + 0.02, 0.02)
+    else:
         e.altura = analisis.valor(analisis.altura, e.tiempo + 0.03)
         e.confianza = analisis.maximo(analisis.confianza_melodia, e.tiempo + 0.02, 0.02)
-        percusion = max((_PESO_CAPA[c] * e.fuerza(c) for c in PERCUSION), default=0.0)
-        percusion += 0.25 * sum(_PESO_CAPA[c] * e.fuerza(c) for c in PERCUSION) - 0.25 * percusion
-        fuerzas_m = {c: e.fuerza(c) for c in MELODIA}
-        # Un bombo grave y largo (808) también se ve como "bajo" armónico: si hay
-        # bombo al mismo tiempo, ese ataque se atribuye a la percusión.
-        if "bajo" in fuerzas_m and e.fuerza("bombo") >= 0.5 * fuerzas_m["bajo"]:
-            fuerzas_m["bajo"] *= 0.3
-        melodia = max([_PESO_CAPA[c] * f for c, f in fuerzas_m.items()] + [_PESO_CAMBIO_MELODICO * e.cambio])
-        aporte_p, aporte_m = peso_p * percusion, peso_m * melodia
-        musical = aporte_p + aporte_m
-        e.melodico = aporte_m / musical if musical > 0 else 0.0
-        e.saliencia = musical + _BONO_NIVEL[e.nivel] * perfil.peso_metrico * min(1.0, musical * 4)
-    return ordenados
+
+
+def instrumentos_destacados(analisis: Analisis, eventos: list, opciones: "OpcionesGeneracion") -> dict:
+    """Capa que lleva la música en cada compás: {índice de compás: capa}.
+
+    Se suman los aportes de cada capa en los eventos del compás (ya con el peso
+    del usuario y la atribución bombo/bajo resuelta) y, para las capas
+    melódicas, cuánto suenan sostenidas (una voz larga tiene pocos ataques).
+    Para que no salte de un instrumento a otro, solo se cambia de destacado si
+    el nuevo supera al actual por un 25 %.
+    """
+    if not analisis.capas:
+        return {}
+    duracion_compas = analisis.periodo * analisis.compas
+    primero = int(np.floor(-analisis.offset / duracion_compas))
+    ultimo = int(np.ceil((analisis.duracion - analisis.offset) / duracion_compas))
+    ataques: dict[int, dict[str, float]] = {}
+    for e in eventos:
+        suma = ataques.setdefault(e.compas, {})
+        for capa, aporte in e.aportes.items():
+            suma[capa] = suma.get(capa, 0.0) + aporte
+
+    destacados = {}
+    actual = None
+    for b in range(primero, ultimo):
+        t0 = analisis.offset + b * duracion_compas
+        i = analisis.frame(max(t0, 0.0))
+        j = max(analisis.frame(min(t0 + duracion_compas, analisis.duracion)), i + 1)
+        puntajes = {}
+        for capa in analisis.capas:
+            actividad = min(1.0, ataques.get(b, {}).get(capa, 0.0) / duracion_compas / _ATAQUES_PLENOS)
+            puntaje = actividad
+            presencia = analisis.capas[capa].presencia
+            if capa in MELODIA and presencia is not None:
+                puntaje = 0.5 * actividad + 0.5 * opciones.peso(capa) * float(presencia[i:j].mean())
+            puntajes[capa] = puntaje
+        mejor = max(puntajes, key=puntajes.get)
+        if puntajes[mejor] < 0.05:
+            actual = None
+        elif actual is None or puntajes[mejor] > 1.25 * puntajes.get(actual, 0.0):
+            actual = mejor
+        destacados[b] = actual
+    return destacados
 
 
 def _atenuar_colas(eventos: list, ventana: float = 0.15) -> None:
@@ -310,7 +426,7 @@ def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificul
             tiempos.pop(bisect_left(tiempos, e.tiempo))
     seleccion = [eventos[i] for i in sorted(elegidos, key=lambda i: eventos[i].tiempo)]
     libres = [e for i, e in enumerate(eventos) if i not in elegidos]
-    return rellenar_huecos(analisis, seleccion, libres, perfil, opciones)
+    return rellenar_huecos(analisis, seleccion, libres, perfil, opciones, piso)
 
 
 def _hueco_maximo(analisis: Analisis, perfil: PerfilDificultad, t: float) -> float:
@@ -332,7 +448,7 @@ def _evento_de_pulso(analisis: Analisis, t: float) -> _Evento:
 
 
 def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: PerfilDificultad,
-                    opciones: "OpcionesGeneracion") -> list:
+                    opciones: "OpcionesGeneracion", piso: float = 0.08) -> list:
     """Evita espacios vacíos mientras la música suena.
 
     Para cada hueco más largo que el máximo de la dificultad (más corto en el
@@ -355,13 +471,25 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
         i, j = analisis.frame(a), max(analisis.frame(b), analisis.frame(a) + 1)
         return float(analisis.intensidad[i:j].mean())
 
+    peso_maximo = max(opciones.peso(c) for c in opciones.capas) or 1.0
+
+    def suena_lo_elegido(a, b):
+        """¿Suena algún instrumento al que el usuario le dio influencia?"""
+        if not analisis.capas:
+            return True
+        i, j = analisis.frame(a), max(analisis.frame(b), analisis.frame(a) + 1)
+        return any(opciones.peso(c) / peso_maximo * float(capa.presencia[i:j].mean()) >= 0.2
+                   for c, capa in analisis.capas.items() if capa.presencia is not None)
+
     def rellenar(a: _Evento | None, t0: float, t1: float, profundidad: int = 0):
         maximo = _hueco_maximo(analisis, perfil, (t0 + t1) / 2)
         if t1 - t0 <= maximo or intensidad_media(t0, t1) < 0.25 or profundidad > 64:
             return
         # 1. Hold sobre un sonido sostenido.
-        if a is not None and opciones.holds > 0 and profundidad == 0:
-            sostenido = analisis.sostenido(a.tiempo)
+        capa_hold = a.capa_sostenida() if a is not None else None
+        if (a is not None and opciones.holds > 0 and profundidad == 0
+                and (capa_hold is None or opciones.peso(capa_hold) > 0)):
+            sostenido = analisis.sostenido(a.tiempo, capa=capa_hold)
             if sostenido >= 0.6 * (t1 - t0) and sostenido >= perfil.hold_min_pulsos * periodo:
                 a.hold_hasta = t1
                 return
@@ -370,7 +498,8 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
         i1 = bisect_left(tiempos_libres, t1 - separacion + 1e-6)
         mejor = None
         for j in range(i0, i1):
-            if j in usados or libres[j].saliencia < 0.03:
+            # Golpes más suaves que los elegidos, pero no roces de capas sin influencia.
+            if j in usados or libres[j].saliencia < max(0.03, 0.4 * piso):
                 continue
             puntaje = libres[j].saliencia + _BONO_NIVEL[libres[j].nivel]
             if mejor is None or puntaje > mejor[0]:
@@ -382,8 +511,8 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
             rellenar(None, t0, libres[j].tiempo, profundidad + 1)
             rellenar(libres[j], libres[j].tiempo, t1, profundidad + 1)
             return
-        # 3. Pulsos, solo si la música está claramente sonando.
-        if intensidad_media(t0, t1) < 0.45:
+        # 3. Pulsos, solo si la música está claramente sonando (y es música elegida).
+        if intensidad_media(t0, t1) < 0.45 or not suena_lo_elegido(t0, t1):
             return
         paso = max(1, int(round(maximo / periodo))) * periodo
         primero = analisis.offset + np.ceil((t0 + separacion - analisis.offset) / periodo) * periodo
@@ -528,24 +657,56 @@ def _patron_manos(n, k, rng, eventos):
 
 
 def _patron_melodia(n, k, rng, eventos, jack_min):
-    """Las alturas de la frase se ordenan y se reparten por las columnas."""
-    alturas = np.array([e.altura for e in eventos])
-    distintas = np.unique(np.round(alturas))
-    if distintas.size <= 1:
+    """Dibuja el contorno de la melodía (o del bajo) de forma relativa.
+
+    Si la nota sube, la columna se mueve a la derecha; si baja, a la izquierda
+    (dos columnas en saltos grandes, si caben). Cada tramo que sube o baja
+    arranca desde una columna que le deje espacio. Una nota repetida rápida se
+    vuelve un trino con la columna vecina.
+    """
+    alturas = np.round([e.altura for e in eventos])
+    if np.unique(alturas).size <= 1:
         return _patron_trino(n, k, rng)
-    rango = np.interp(np.round(alturas), distintas, np.linspace(0, 1, distintas.size))
-    ancho = min(k - 1, distintas.size - 1 + (k > 4))
-    base = int(rng.integers(0, k - ancho)) if k - ancho > 0 else 0
-    salida = []
-    anterior = None
-    for i, r in enumerate(rango):
-        columna = base + int(round(r * ancho))
-        if anterior is not None and columna == anterior:
-            dt = eventos[i].tiempo - eventos[i - 1].tiempo
-            if dt < 2 * jack_min:  # nota repetida rápida: trino con la vecina
-                columna = columna + 1 if columna + 1 < k else columna - 1
-        salida.append((columna,))
-        anterior = columna
+    saltos = np.diff(alturas)
+    direcciones = np.sign(saltos)
+
+    def largo_tramo(i, signo):
+        """Cuántos movimientos seguidos en `signo` empiezan en el salto i (las repeticiones no cortan)."""
+        largo = 0
+        while i < len(direcciones) and direcciones[i] in (0, signo):
+            largo += direcciones[i] != 0
+            i += 1
+        return largo
+
+    no_nulas = [d for d in direcciones if d != 0]
+    primera = no_nulas[0] if no_nulas else 1
+    largo = largo_tramo(0, primera)
+    columna = max(0, (k - 1) - largo) if primera > 0 else min(k - 1, largo)
+    columna = int(columna if largo < k else (0 if primera > 0 else k - 1))
+    salida = [(columna,)]
+    base = columna  # columna "propia" de la nota (sin el desvío del trino)
+    for i, salto in enumerate(saltos):
+        if salto == 0:
+            dt = eventos[i + 1].tiempo - eventos[i].tiempo
+            if dt < 2 * jack_min:
+                vecina = salida[-1][0] + (1 if salida[-1][0] == base and base + 1 < k else -1)
+                if salida[-1][0] != base:
+                    vecina = base
+                salida.append((int(np.clip(vecina, 0, k - 1)),))
+            else:
+                salida.append((base,))
+            continue
+        signo = int(np.sign(salto))
+        paso = 2 if abs(salto) >= 5 and k > 4 else 1
+        if abs(salto) >= 7 and k == 4:
+            paso = 2
+        destino = base + signo * paso
+        if not 0 <= destino < k:
+            destino = base + signo  # el salto grande no cabe: un solo paso
+        if not 0 <= destino < k:
+            destino = base - signo  # tope del teclado: inevitable rebotar
+        base = int(np.clip(destino, 0, k - 1))
+        salida.append((base,))
     return salida
 
 
@@ -618,7 +779,7 @@ class _Asignador:
         # Una frase llevada por la melodía dibuja su contorno; una llevada por la
         # batería usa patrones rítmicos.
         if "melodia" in pesos:
-            pesos["melodia"] *= 0.2 + 2.5 * melodica
+            pesos["melodia"] *= 0.2 + 4.0 * melodica
         for tipo in ("celda", "trino", "jumptrill", "chordjack", "brackets", "escalera"):
             if tipo in pesos:
                 pesos[tipo] *= 0.3 + 1.7 * (1 - melodica)
@@ -658,19 +819,32 @@ class _Asignador:
             tipo, semilla, veces = self.memoria[firma]
             self.memoria[firma] = (tipo, semilla, veces + 1)
             columnas = self._generar_patron(tipo, frase, np.random.default_rng(semilla))
+            if tipo == "melodia":
+                return tipo, columnas  # el contorno no se refleja: subir debe seguir siendo subir
             return tipo, (_espejo(columnas, self.k) if veces % 2 else columnas)
+        melodica = float(np.mean([e.melodico for e in frase]))
+        confianza = float(np.mean([e.confianza for e in frase]))
+        alturas = np.round([e.altura for e in frase])
+        movimiento = float(np.mean(np.diff(alturas) != 0)) if n > 1 else 0.0
         if n < 3:
             tipo = "suelta"
+        elif melodica >= 0.7 and confianza >= 0.25 and movimiento >= 0.3 and self.p.nombre != "Easy":
+            tipo = "melodia"  # la lleva la melodía o el bajo: se dibuja su contorno
         else:
             pesos = self._pesos_patrones(frase, dt)
+            if melodica <= 0.3:
+                pesos.pop("melodia", None)  # la lleva la batería: patrones rítmicos
+            if not pesos:
+                pesos = {"celda": 1.0}
             tipos = list(pesos)
             valores = np.array([pesos[t] for t in tipos])
             tipo = tipos[int(self.rng.choice(len(tipos), p=valores / valores.sum()))]
         semilla = int(self.rng.integers(1 << 30))
         columnas = self._generar_patron("melodia" if tipo == "suelta" else tipo, frase,
                                         np.random.default_rng(semilla))
-        # Se elige la orientación que mejor empalma con lo anterior.
-        candidatas = [columnas, _espejo(columnas, self.k)]
+        # Se elige la orientación que mejor empalma con lo anterior (salvo un
+        # contorno melódico, que no se refleja).
+        candidatas = [columnas] if tipo == "melodia" else [columnas, _espejo(columnas, self.k)]
         espejo = int(np.argmin([self._conflictos(frase, c) for c in candidatas]))
         if n >= 3:
             self.memoria[firma] = (tipo, semilla, espejo)
@@ -703,7 +877,8 @@ class _Asignador:
         if p.acorde_max <= 1 or evento.nivel > (2 if p.nombre == "Insane" else 1):
             return 1
         # Los acordes marcan golpes de bombo y caja, en proporción al peso de la percusión.
-        fuerza = max(evento.fuerza("bombo"), 0.85 * evento.fuerza("caja"))
+        atribuidas = evento.atribuidas or evento.capas
+        fuerza = max(atribuidas.get("bombo", 0.0), 0.85 * atribuidas.get("caja", 0.0))
         fuerza *= min(1.0, 2 * self.o.percusion)
         umbral = {"Easy": 0.8, "Normal": 0.65, "Hard": 0.55, "Insane": 0.5}[p.nombre]
         if fuerza < umbral:
@@ -787,10 +962,16 @@ class _Asignador:
             objetivo = evento.hold_hasta
             probabilidad = min(1.0, 0.6 + 0.4 * o.holds)
         else:
-            sostenido = a.sostenido(nota.tiempo)
-            if sostenido >= minimo:
+            # El hold dura lo que dura el instrumento que lleva la nota (voz, bajo...).
+            capa = evento.capa_sostenida()
+            sostenido = a.sostenido(nota.tiempo, capa=capa)
+            # Margen del 15 %: una nota de un pulso que se apaga un poco antes sigue valiendo.
+            if sostenido >= 0.85 * minimo:
+                sostenido = max(sostenido, minimo)
                 objetivo = nota.tiempo + sostenido
                 probabilidad = p.prob_hold * min(o.holds, 1.5) * (0.5 + 1.2 * evento.melodico)
+                if capa is not None and capa == evento.destacado:
+                    probabilidad *= 1.5  # el instrumento destacado sostiene: se nota más
             elif o.holds > 1.0:
                 # Sobre 1×, estilo LN: también se alargan notas cortas; la otra mano
                 # sigue tocando y el hold se suelta en una nota cercana.
@@ -868,6 +1049,7 @@ class _Asignador:
 def generar_mapa(analisis: Analisis, opciones: OpcionesGeneracion) -> Mapa:
     perfil = obtener_perfil(opciones.dificultad, opciones.teclas)
     eventos = construir_eventos(analisis, perfil, opciones)
+    tramos = tramos_destacados(analisis, eventos)
     eventos = seleccionar_eventos(analisis, eventos, perfil, opciones)
     asignador = _Asignador(analisis, opciones, perfil)
     notas = asignador.asignar(eventos)
@@ -875,4 +1057,21 @@ def generar_mapa(analisis: Analisis, opciones: OpcionesGeneracion) -> Mapa:
     notas.sort(key=lambda n: (n.tiempo, n.columna))
     divisor = 4 if perfil.divisor >= 4 else 2
     return Mapa(opciones.teclas, opciones.dificultad, perfil, notas, divisor_editor=divisor,
-                frases=asignador.frases)
+                frases=asignador.frases, destacados=tramos)
+
+
+def tramos_destacados(analisis: Analisis, eventos: list) -> list:
+    """Une los compases seguidos con el mismo instrumento destacado en tramos."""
+    duracion_compas = analisis.periodo * analisis.compas
+    destacados = {e.compas: e.destacado for e in eventos}
+    tramos = []
+    for b, capa in sorted(destacados.items()):
+        inicio = max(0.0, analisis.offset + b * duracion_compas)
+        fin = min(analisis.duracion, analisis.offset + (b + 1) * duracion_compas)
+        if fin <= inicio or capa is None:
+            continue
+        if tramos and tramos[-1][2] == capa and abs(tramos[-1][1] - inicio) < 1e-6:
+            tramos[-1] = (tramos[-1][0], fin, capa)
+        else:
+            tramos.append((inicio, fin, capa))
+    return tramos

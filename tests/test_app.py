@@ -96,3 +96,16 @@ def test_regenerar_con_bpm_forzado_reanaliza(cliente):
 def test_regenerar_trabajo_inexistente(cliente):
     import uuid
     assert cliente.post(f"/api/trabajos/{uuid.uuid4()}/generar").status_code == 404
+
+
+def test_influencia_por_capa_y_destacados(cliente):
+    creado = cliente.post("/api/trabajos", data={"audio": (_wav(), "x.wav")},
+                          content_type="multipart/form-data").get_json()
+    url = f"/api/trabajos/{creado['id']}/generar"
+    datos = cliente.post(url, data={"teclas": "4", "dificultades": "Hard", "capa_bombo": "1",
+                                    "capa_caja": "0", "capa_platillos": "0", "capa_bajo": "0",
+                                    "capa_melodia": "0.2"}).get_json()
+    tramos = datos["mapas"][0]["destacados"]
+    assert tramos and all(len(t) == 3 and t[0] < t[1] for t in tramos)
+    nulos = {f"capa_{c}": "0" for c in ("bombo", "caja", "platillos", "bajo", "melodia")}
+    assert cliente.post(url, data={"teclas": "4", **nulos}).status_code == 400

@@ -71,6 +71,8 @@ class Analisis:
     energia_tonal_db: np.ndarray
     secciones: list = field(default_factory=list)
     capas: dict = field(default_factory=dict)  # nombre -> capas.Capa
+    altura_bajo: np.ndarray | None = None       # contorno de la línea de bajo (MIDI)
+    confianza_bajo: np.ndarray | None = None
 
     # ---- rejilla rítmica -------------------------------------------------
     @property
@@ -104,20 +106,26 @@ class Analisis:
                 return s
         return self.secciones[-1] if self.secciones else None
 
-    def sostenido(self, t: float, maximo: float = 4.0) -> float:
+    def sostenido(self, t: float, maximo: float = 4.0, capa: str | None = None) -> float:
         """Cuánto dura el sonido tonal que empieza en `t` (segundos).
 
-        Se corta cuando la energía tonal cae 7 dB respecto del ataque o cuando
-        aparece un ataque melódico nuevo (banda media).
+        Se corta cuando la energía cae 7 dB respecto del ataque o cuando aparece
+        un ataque nuevo. Con `capa` ("bajo", "melodia") se mide solo ese
+        instrumento: un hold sigue al bajo o a la voz, no a la mezcla entera.
         """
         i = self.frame(t)
         fin = min(self.env.size, i + int(maximo / self.hop_s))
         if fin - i < 4:
             return 0.0
-        referencia = float(self.energia_tonal_db[i:i + 4].max())
-        tramo = self.energia_tonal_db[i + 4:fin]
-        # Solo un ataque armónico nuevo corta la nota: la percusión no.
-        ataques = self.capas["melodia"].env if "melodia" in self.capas else self.env_medio
+        if capa is not None and capa in self.capas and self.capas[capa].energia_db is not None:
+            energia = self.capas[capa].energia_db
+            ataques = self.capas[capa].env
+        else:
+            energia = self.energia_tonal_db
+            # Solo un ataque armónico nuevo corta la nota: la percusión no.
+            ataques = self.capas["melodia"].env if "melodia" in self.capas else self.env_medio
+        referencia = float(energia[i:i + 4].max())
+        tramo = energia[i + 4:fin]
         golpes = ataques[i + 4:fin]
         corte = (tramo < referencia - 7.0) | (golpes > 0.5)
         if corte.any():
@@ -143,8 +151,12 @@ class Analisis:
             "secciones": [s.como_dict() for s in self.secciones],
             "intensidad": reducir(self.intensidad),
             "onset_env": reducir(self.env),
+            # En las capas melódicas también cuenta cuánto suenan sostenidas (una voz
+            # larga ataca poco pero se oye todo el tiempo).
             "capas": {nombre: {"familia": c.familia, "onsets": int((c.fuerzas >= 0.2).sum()),
-                               "actividad": reducir(c.actividad)}
+                               "actividad": reducir(np.maximum(c.actividad, c.presencia)
+                                                    if c.familia == "melodia" and c.presencia is not None
+                                                    else c.actividad)}
                       for nombre, c in self.capas.items()},
         }
 
@@ -174,11 +186,13 @@ def banco_mel(sr: int, n_fft: int, n_mel: int = N_MEL, fmin: float = 30.0, fmax:
     return banco, puntos[1:-1]
 
 
-def _matriz_armonicos(sr: int, n_fft: int):
-    """Índices de bin y pesos para la suma de armónicos de cada candidato a f0."""
-    midis = np.arange(43, 88)  # G2 .. D#6
+def _matriz_armonicos(sr: int, n_fft: int, midi_min: int = 43, midi_max: int = 87, n_armonicos: int = 6):
+    """Índices de bin y pesos para la suma de armónicos de cada candidato a f0.
+
+    Por defecto G2..D#6 (melodía/voz); el bajo usa E1..E3."""
+    midis = np.arange(midi_min, midi_max + 1)
     f0 = 440.0 * 2.0 ** ((midis - 69) / 12.0)
-    armonicos = np.arange(1, 7)
+    armonicos = np.arange(1, n_armonicos + 1)
     resolucion = sr / n_fft
     bins = np.rint(np.outer(f0, armonicos) / resolucion).astype(int)
     n_bins = n_fft // 2 + 1
@@ -198,6 +212,7 @@ def _espectros(senal: np.ndarray, sr: int):
     ventana_mel = np.hanning(N_FFT_MELODIA).astype(np.float32)
     banco, centros = banco_mel(sr, N_FFT_ONSET)
     midis, bins_arm, pesos_arm = _matriz_armonicos(sr, N_FFT_MELODIA)
+    midis_bajo, bins_bajo, pesos_bajo = _matriz_armonicos(sr, N_FFT_MELODIA, 28, 52, 4)
     frecuencias_mel = np.fft.rfftfreq(N_FFT_MELODIA, 1.0 / sr)
     banda_tonal = (frecuencias_mel >= 80) & (frecuencias_mel <= 4000)
 
@@ -207,6 +222,7 @@ def _espectros(senal: np.ndarray, sr: int):
     energia = np.zeros(n_frames, dtype=np.float32)
     energia_tonal = np.zeros(n_frames, dtype=np.float32)
     saliencia = np.zeros((n_frames, midis.size), dtype=np.float32)
+    saliencia_bajo = np.zeros((n_frames, midis_bajo.size), dtype=np.float32)
 
     desplaz_on = margen - N_FFT_ONSET // 2  # centra ambas ventanas en el mismo instante
     for inicio in range(0, n_frames, BLOQUE):
@@ -226,10 +242,12 @@ def _espectros(senal: np.ndarray, sr: int):
         energia_tonal[inicio:fin] = (magnitud[:, banda_tonal] ** 2).sum(axis=1)
         comprimida = np.log1p(magnitud * 10.0)
         saliencia[inicio:fin] = (comprimida[:, bins_arm] * pesos_arm[None]).sum(axis=2)
+        saliencia_bajo[inicio:fin] = (comprimida[:, bins_bajo] * pesos_bajo[None]).sum(axis=2)
 
     mel_db = 10.0 * np.log10(mel + 1e-10)
     mel_db = np.maximum(mel_db, mel_db.max() - 80.0)
-    return mel_db, energia, energia_tonal, saliencia, midis, centros, mel_fino, centros_fino
+    return (mel_db, energia, energia_tonal, saliencia, midis, centros, mel_fino, centros_fino,
+            saliencia_bajo, midis_bajo)
 
 
 def _normalizar(curva: np.ndarray, percentil: float = 99.5) -> np.ndarray:
@@ -475,7 +493,7 @@ def analizar(senal: np.ndarray, sr: int, bpm: float | None = None,
     hop_s = HOP / sr
     duracion = senal.size / sr
     (mel_db, energia, energia_tonal, saliencia, midis, centros,
-     mel_fino, centros_fino) = _espectros(senal, sr)
+     mel_fino, centros_fino, saliencia_bajo, midis_bajo) = _espectros(senal, sr)
     capas = modulo_capas.separar(mel_fino, centros_fino, hop_s, detectar_onsets)
     del mel_fino
 
@@ -511,6 +529,7 @@ def analizar(senal: np.ndarray, sr: int, bpm: float | None = None,
 
     intensidad = curva_intensidad(energia, hop_s)
     altura, confianza = contorno_melodico(saliencia, midis, hop_s)
+    altura_bajo, confianza_bajo = contorno_melodico(saliencia_bajo, midis_bajo, hop_s)
     energia_tonal_db = uniform_filter1d(10.0 * np.log10(energia_tonal + 1e-10), size=5)
 
     secciones = detectar_secciones(mel_db, intensidad, env, hop_s, fase, bpm_final, duracion, compas)
@@ -524,4 +543,6 @@ def analizar(senal: np.ndarray, sr: int, bpm: float | None = None,
         energia_tonal_db=energia_tonal_db.astype(np.float32),
         secciones=secciones,
         capas=capas,
+        altura_bajo=altura_bajo,
+        confianza_bajo=confianza_bajo,
     )

@@ -9,6 +9,11 @@
   --ok: #6fdc8c;
   --aviso: #ffcc66;
   --error: #ff7070;
+  --c-bombo: #ff4f8b;
+  --c-caja: #ffa94d;
+  --c-platillos: #ffe066;
+  --c-bajo: #4dabf7;
+  --c-melodia: #b197fc;
   color-scheme: dark;
 }
 
@@ -132,7 +137,8 @@ button.ficha.activa { border-color: var(--acento); color: var(--acento); }
 .cabecera-analisis > div { flex: 1; display: grid; gap: 10px; min-width: 0; }
 #miniatura { width: 220px; max-width: 40%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 8px; border: 1px solid var(--borde); }
 .subtitulo { margin: 4px 0 0; font-size: .95rem; color: var(--suave); font-weight: 600; }
-#capas { height: 130px; }
+#capas { height: 160px; }
+.subtitulo small { font-weight: 400; }
 @media (max-width: 700px) {
   .cabecera-analisis { flex-direction: column; }
   #miniatura { max-width: 100%; width: 100%; }
@@ -145,3 +151,9 @@ button.ficha.activa { border-color: var(--acento); color: var(--acento); }
 .cancion-cargada small { color: var(--suave); }
 #fuente { display: grid; gap: 14px; }
 [hidden] { display: none !important; }
+
+.capas-controles { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; width: 100%; }
+.familia { display: grid; gap: 8px; align-content: start; }
+.familia h4 { margin: 0; font-size: .85rem; color: var(--texto); font-weight: 600; }
+.familia label > span { display: inline-flex; align-items: center; gap: 6px; }
+.punto { display: inline-block; width: 10px; height: 10px; border-radius: 50%; }

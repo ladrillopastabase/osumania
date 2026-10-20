@@ -20,7 +20,8 @@ También hay una línea de comandos:
 
 ```bash
 python -m motor.cli "Artista - Tema.mp3" --teclas 4 7 --dificultades Hard Insane \
-    --percusion 0.7 --melodia 0.4 --imagen fondo.jpg --artista "Artista" --salida salida/
+    --capas bombo=1 caja=0.9 platillos=0.3 bajo=0.8 melodia=1 --imagen fondo.jpg \
+    --artista "Artista" --salida salida/
 ```
 
 Pruebas: `python -m pytest -q`. Incluyen una canción sintética con ritmo conocido
@@ -85,6 +86,33 @@ bombo 100 % encontrado / 91 % correcto, caja 100 / 81 %, platillos 96 / 100 %, m
 No es una separación de fuentes perfecta: no distingue una voz de una guitarra en el mismo
 registro. La interfaz muestra la actividad de cada capa a lo largo de la canción.
 
+Además de los ataques, cada capa guarda su **presencia** (cuánto suena respecto de lo
+habitual en sus bandas, útil para voces largas que atacan poco) y su **energía**, con la
+que se mide cuánto dura una nota de ese instrumento. El bajo tiene su propio contorno de
+altura (E1–E3), aparte del de la melodía (G2–D#6).
+
+### Instrumento destacado
+
+En cada compás se elige el instrumento que lleva la música: el que más aporta en los
+eventos del compás (ya con la influencia que eligió el usuario) y, para el bajo y la voz,
+también cuánto suenan sostenidos. Para no saltar de un instrumento a otro, solo cambia si
+el nuevo supera al actual en un 25 %. El destacado:
+
+- **pesa más** al elegir qué golpes se vuelven notas (×1,6; el resto ×0,8);
+- **decide el patrón**: si lo lleva la voz o el bajo (≥ 70 % melódico), las columnas dibujan
+  su contorno de forma relativa (sube → derecha, baja → izquierda; los saltos grandes avanzan
+  dos columnas), usando la línea de bajo cuando el bajo lidera; si lo lleva la batería, se
+  usan patrones rítmicos;
+- **decide los holds**: duran lo que dura la nota de ese instrumento (medido en su capa, no en
+  la mezcla) y son más probables cuando ese instrumento es el destacado.
+
+Bombo y bajo comparten registro: una nota real de bajo cambia de altura y la cola de un 808
+no; con eso se decide a quién atribuir cada golpe grave. En la canción de prueba con
+instrumentos que se turnan (`cancion_capas`): el destacado sale bien en las tres partes
+(bajo, batería, voz), en 7K las columnas siguen la dirección del bajo en ~90-95 % de los
+cambios (en 4K una línea de 5 notas seguidas no cabe en 4 columnas y baja a ~60 %), y las
+notas largas de la voz se vuelven holds con el largo correcto.
+
 ### Motor de generación híbrida (`motor/generador.py`)
 
 1. **Eventos**: los ataques de cada capa se ajustan a la rejilla de la dificultad: 1/1 y 1/2 en
@@ -147,8 +175,10 @@ patrones manteniendo el ritmo.
   artista se toman del video ("Artista - Tema") si no se escriben a mano. Si YouTube cambia
   y la descarga falla, actualiza yt-dlp: `pip install -U yt-dlp`.
 - **Modos** 4K / 7K y **dificultades** a generar.
-- **Percusión y melodía** (0–100 % cada una, con preajustes *Equilibrado*, *Batería*,
-  *Melodía* y *Todo*): cuánto siguen las notas a la batería y cuánto a la melodía/voz/bajo.
+- **Influencia de cada instrumento** (0–100 %: bombo, caja, platillos, bajo, melodía/voz; con
+  preajustes *Equilibrado*, *Batería*, *Melodía / voz*, *Bajo* y *Todo*). Un instrumento en
+  0 % no genera notas, ni siquiera de relleno. La vista de capas muestra arriba qué instrumento
+  quedó como destacado en cada tramo.
 - **Imagen de fondo** (opcional): si no se sube una, se usa la miniatura del video de
   YouTube o la carátula incrustada en el MP3/FLAC. Se guarda como JPG de hasta 1920 px y
   se ve también detrás de la previsualización.

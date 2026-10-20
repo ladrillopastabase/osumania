@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Generador osu!mania</title>
-  <link rel="stylesheet" href="/static/estilos.css?v=5">
+  <link rel="stylesheet" href="/static/estilos.css?v=6">
 </head>
 <body>
   <header class="cabecera">
@@ -56,22 +56,33 @@
       </fieldset>
 
       <fieldset class="mezcla">
-        <legend>¿Qué siguen las notas?</legend>
+        <legend>¿Qué siguen las notas? Influencia de cada instrumento</legend>
         <div class="preajustes">
-          <button type="button" class="ficha" data-mezcla="50,50">Equilibrado</button>
-          <button type="button" class="ficha" data-mezcla="90,20">Batería</button>
-          <button type="button" class="ficha" data-mezcla="20,90">Melodía</button>
-          <button type="button" class="ficha" data-mezcla="70,70">Todo</button>
+          <button type="button" class="ficha" data-mezcla="100,90,50,60,100">Equilibrado</button>
+          <button type="button" class="ficha" data-mezcla="100,100,80,20,20">Batería</button>
+          <button type="button" class="ficha" data-mezcla="30,25,10,40,100">Melodía / voz</button>
+          <button type="button" class="ficha" data-mezcla="50,40,10,100,40">Bajo</button>
+          <button type="button" class="ficha" data-mezcla="100,100,100,100,100">Todo</button>
         </div>
-        <div class="rejilla">
-          <label>Percusión (bombo, caja, platillos) <output id="v-percusion">50%</output>
-            <input type="range" name="percusion" min="0" max="100" step="5" value="50">
-          </label>
-          <label>Melodía (voz, instrumentos, bajo) <output id="v-melodia">50%</output>
-            <input type="range" name="melodia" min="0" max="100" step="5" value="50">
-          </label>
+        <div class="capas-controles">
+          <div class="familia">
+            <h4>Percusión</h4>
+            <label><span><i class="punto" style="background:var(--c-bombo)"></i>Bombo</span> <output id="v-capa_bombo"></output>
+              <input type="range" name="capa_bombo" min="0" max="100" step="5" value="100"></label>
+            <label><span><i class="punto" style="background:var(--c-caja)"></i>Caja</span> <output id="v-capa_caja"></output>
+              <input type="range" name="capa_caja" min="0" max="100" step="5" value="90"></label>
+            <label><span><i class="punto" style="background:var(--c-platillos)"></i>Platillos</span> <output id="v-capa_platillos"></output>
+              <input type="range" name="capa_platillos" min="0" max="100" step="5" value="50"></label>
+          </div>
+          <div class="familia">
+            <h4>Melodía</h4>
+            <label><span><i class="punto" style="background:var(--c-bajo)"></i>Bajo</span> <output id="v-capa_bajo"></output>
+              <input type="range" name="capa_bajo" min="0" max="100" step="5" value="60"></label>
+            <label><span><i class="punto" style="background:var(--c-melodia)"></i>Melodía / voz</span> <output id="v-capa_melodia"></output>
+              <input type="range" name="capa_melodia" min="0" max="100" step="5" value="100"></label>
+          </div>
         </div>
-        <p class="ayuda">La canción se separa en capas por instrumento. Más percusión: patrones rítmicos y acordes en bombo y caja. Más melodía: las notas dibujan el contorno de la melodía.</p>
+        <p class="ayuda">Cada control decide cuánto aporta ese instrumento. En cada compás se elige el instrumento destacado (el que más suena y más pesa aquí): las notas cortas siguen sus golpes, el contorno sigue su altura (la voz o la línea de bajo) y los holds duran lo que dura su nota. Con un control en 0 %, ese instrumento no genera notas.</p>
       </fieldset>
 
       <div class="rejilla">
@@ -113,7 +124,7 @@
         </div>
         <canvas id="linea-tiempo" height="90"></canvas>
         <div id="leyenda-secciones" class="leyenda"></div>
-        <h3 class="subtitulo">Capas por instrumento</h3>
+        <h3 class="subtitulo">Capas por instrumento <small>(arriba: el instrumento destacado que siguen las notas)</small></h3>
         <canvas id="capas" height="130"></canvas>
       </div>
 
@@ -148,6 +159,6 @@
     </section>
   </main>
 
-  <script src="/static/app.js?v=6"></script>
+  <script src="/static/app.js?v=7"></script>
 </body>
 </html>

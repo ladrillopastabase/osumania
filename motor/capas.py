@@ -41,6 +41,8 @@ class Capa:
     actividad: np.ndarray  # fuerza de ataques por segundo, suavizada, 0..1
     onsets: np.ndarray
     fuerzas: np.ndarray
+    presencia: np.ndarray | None = None   # cuánto suena la capa respecto de lo habitual, 0..1
+    energia_db: np.ndarray | None = None  # energía de la capa (dB), para medir notas sostenidas
 
 
 def hpss(potencia: np.ndarray, hop_s: float, bandas_freq: int = 9):
@@ -86,6 +88,16 @@ def separar(mel_fino: np.ndarray, centros: np.ndarray, hop_s: float, detectar_on
         if nombre not in crudas:
             continue
         env = np.clip(crudas[nombre] / escala[familia], 0, 1.5).astype(np.float32)
+        bandas = (centros >= fmin) & (centros < fmax)
+        fuente = (percusiva if parte == "p" else armonica)[:, bandas]
+        energia_db = uniform_filter1d(10.0 * np.log10(fuente.sum(axis=1) + 1e-10), size=5)
+        # Presencia: nivel de la capa relativo al nivel fuerte de sus bandas (comparable
+        # entre capas, a diferencia de la energía absoluta que favorece los graves).
+        # Se promedia el cuarto de bandas más fuerte: una voz ocupa pocas bandas a la vez.
+        zona = comprimidas[parte][:, bandas]
+        cuantas = max(1, zona.shape[1] // 4)
+        presencia = np.sort(zona, axis=1)[:, -cuantas:].mean(axis=1) / np.log1p(100.0)
+        presencia = uniform_filter1d(presencia, size=max(3, int(0.5 / hop_s)))
         onsets, fuerzas = detectar_onsets(env, hop_s, delta=0.08)
         # Actividad: fuerza de los ataques por segundo (lo que importa para mapear).
         golpes = np.zeros(n_frames, dtype=np.float32)
@@ -93,7 +105,8 @@ def separar(mel_fino: np.ndarray, centros: np.ndarray, hop_s: float, detectar_on
             indices = np.clip(np.rint(onsets / hop_s).astype(int), 0, n_frames - 1)
             np.add.at(golpes, indices, fuerzas)
         actividad = uniform_filter1d(golpes, size=max(3, int(1.0 / hop_s))) / hop_s
-        capas[nombre] = Capa(nombre, familia, env, actividad, onsets, fuerzas)
+        capas[nombre] = Capa(nombre, familia, env, actividad, onsets, fuerzas,
+                             np.clip(presencia, 0, 1).astype(np.float32), energia_db.astype(np.float32))
     # Actividad normalizada por familia, para comparar capas entre sí.
     for familia in ("percusion", "melodia"):
         miembros = [c for c in capas.values() if c.familia == familia]
