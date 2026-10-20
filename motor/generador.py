@@ -46,6 +46,18 @@ _BONO_NIVEL = {0: 0.15, 1: 0.1, 2: 0.05, 3: 0.0}
 _FACTOR_SECCION = {"tranquila": 0.55, "media": 0.9, "intensa": 1.15, "clímax": 1.45}
 # Hueco máximo (en pulsos) con música sonando, antes de rellenar; se escala por sección.
 _HUECO_MAXIMO = {"Easy": 4.0, "Normal": 2.0, "Hard": 1.5, "Insane": 1.0}
+# Holds: largo máximo y pausa mínima entre holds (en pulsos), y parte del tiempo que
+# pueden ocupar en una ventana de 8 pulsos con el control en 1×. Holds largos y
+# seguidos se vuelven monótonos: es mejor pocos, en notas que de verdad se sostienen.
+_HOLD_MAXIMO = {"Easy": 4.0, "Normal": 3.0, "Hard": 2.0, "Insane": 2.0}
+_HOLD_PAUSA = {"Easy": 2.0, "Normal": 1.5, "Hard": 1.0, "Insane": 1.0}
+_HOLD_COBERTURA = 0.25
+_HOLD_VENTANA = 8.0
+
+
+def hold_maximo(perfil: PerfilDificultad, periodo: float, holds: float) -> float:
+    """Largo máximo de un hold en segundos (el estilo LN, sobre 1×, permite algo más)."""
+    return _HOLD_MAXIMO[perfil.nombre] * periodo * (1.0 + 0.5 * max(0.0, holds - 1.0))
 _FACTOR_HUECO = {"tranquila": 2.0, "media": 1.0, "intensa": 0.75, "clímax": 0.5}
 _UNIDADES_PULSO = 12  # 1/4 = 3 unidades, 1/3 = 4 unidades
 
@@ -157,7 +169,8 @@ class _Evento:
         fuerzas = {c: self.fuerza(c) for c in MELODIA}
         mejor = max(fuerzas, key=fuerzas.get)
         return mejor if fuerzas[mejor] > 0 else None
-    hold_hasta: float = 0.0  # si > 0, el evento debería sostenerse hasta este tiempo
+    hold_hasta: float = 0.0  # si > 0, el relleno de huecos pidió sostenerlo hasta aquí
+    hold_plan: float = 0.0   # si > 0, el plan de holds decidió sostenerlo hasta aquí
 
     def fuerza(self, capa: str) -> float:
         return self.capas.get(capa, 0.0)
@@ -455,7 +468,8 @@ def seleccionar_eventos(analisis: Analisis, eventos: list, perfil: PerfilDificul
 def _hueco_maximo(analisis: Analisis, perfil: PerfilDificultad, t: float) -> float:
     seccion = analisis.seccion_en(t)
     factor = _FACTOR_HUECO[seccion.etiqueta] if seccion is not None else 1.0
-    return _HUECO_MAXIMO[perfil.nombre] * factor * analisis.periodo
+    # Un pulso sin notas nunca es un hueco: es parte del ritmo.
+    return max(1.0, _HUECO_MAXIMO[perfil.nombre] * factor) * analisis.periodo
 
 
 def _evento_de_pulso(analisis: Analisis, t: float) -> _Evento:
@@ -489,6 +503,17 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
     usados: set[int] = set()
     nuevos: list[_Evento] = []
     separacion = perfil.separacion_min
+    # Holds de relleno ya pedidos, para respetar la misma pausa y el mismo tope de
+    # tiempo cubierto que los holds normales.
+    holds_relleno: list[tuple[float, float]] = []
+    pausa_hold = _HOLD_PAUSA[perfil.nombre] * periodo / max(1.0, opciones.holds)
+
+    def cabe_hold(t: float) -> bool:
+        if holds_relleno and t < holds_relleno[-1][1] + pausa_hold:
+            return False
+        ventana = _HOLD_VENTANA * periodo
+        cubierto = sum(max(0.0, min(f, t) - max(i, t - ventana)) for i, f in holds_relleno)
+        return cubierto / ventana < _HOLD_COBERTURA * min(opciones.holds, 2.5)
 
     def intensidad_media(a, b):
         i, j = analisis.frame(a), max(analisis.frame(b), analisis.frame(a) + 1)
@@ -506,15 +531,20 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
 
     def rellenar(a: _Evento | None, t0: float, t1: float, profundidad: int = 0):
         maximo = _hueco_maximo(analisis, perfil, (t0 + t1) / 2)
-        if t1 - t0 <= maximo or intensidad_media(t0, t1) < 0.25 or profundidad > 64:
+        if t1 - t0 <= maximo * 1.05 or intensidad_media(t0, t1) < 0.25 or profundidad > 64:
             return
         # 1. Hold sobre un sonido sostenido.
         capa_hold = a.capa_sostenida() if a is not None else None
-        if (a is not None and opciones.holds > 0 and profundidad == 0
+        if (a is not None and opciones.holds > 0 and profundidad == 0 and cabe_hold(a.tiempo)
                 and (capa_hold is None or opciones.peso(capa_hold, a.tiempo) > 0)):
             sostenido = analisis.sostenido(a.tiempo, capa=capa_hold)
-            if sostenido >= 0.6 * (t1 - t0) and sostenido >= perfil.hold_min_pulsos * periodo:
-                a.hold_hasta = t1
+            tope = hold_maximo(perfil, periodo, opciones.holds)
+            if sostenido >= 0.6 * min(t1 - t0, tope) and sostenido >= perfil.hold_min_pulsos * periodo:
+                # El hold cubre hasta su largo máximo; lo que sobra se rellena con notas.
+                a.hold_hasta = min(t1, t0 + min(sostenido, tope))
+                holds_relleno.append((a.tiempo, a.hold_hasta))
+                if t1 - a.hold_hasta > maximo:
+                    rellenar(None, a.hold_hasta, t1, profundidad + 1)
                 return
         # 2. El golpe real más fuerte que quedó afuera dentro del hueco.
         i0 = bisect_left(tiempos_libres, t0 + separacion - 1e-6)
@@ -760,6 +790,8 @@ class _Asignador:
         self.tiempos_eventos: list[float] = []
         self.paso_hold = self.a.periodo / (2 if perfil.divisor <= 2 else 4)
         self.hueco_hold = max(0.06, perfil.jack_min * 0.5)  # tras soltar un hold
+        self.hold_maximo = hold_maximo(perfil, self.a.periodo, opciones.holds)
+        self.holds_hechos: list[tuple[float, float, int]] = []  # (inicio, fin, columna)
 
     # -- elección del patrón -------------------------------------------------
     def _pesos_patrones(self, frase, dt):
@@ -941,7 +973,7 @@ class _Asignador:
             if nota.fin <= t:
                 del self.holds_activos[c]
 
-    def _fin_musical(self, t: float, objetivo: float, minimo: float) -> float | None:
+    def _fin_musical(self, t: float, objetivo: float, minimo: float, limite: float) -> float | None:
         """Elige dónde soltar un hold que debería durar hasta `objetivo`.
 
         Se prefiere soltar justo cuando empieza otra nota (el gesto natural de un
@@ -951,7 +983,7 @@ class _Asignador:
         a = self.a
         tolerancia = 0.5 * a.periodo
         i = bisect_left(self.tiempos_eventos, t + minimo - 1e-6)
-        j = bisect_left(self.tiempos_eventos, objetivo + tolerancia)
+        j = bisect_left(self.tiempos_eventos, min(objetivo + tolerancia, t + limite + 1e-6))
         if j > i:
             fin = self.tiempos_eventos[j - 1]
             if self.p.nombre == "Easy":
@@ -960,7 +992,7 @@ class _Asignador:
                 return fin
         mejor = None
         paso = self.paso_hold
-        k = np.floor((objetivo - a.offset) / paso + 1e-6)
+        k = np.floor((min(objetivo, t + limite) - a.offset) / paso + 1e-6)
         while True:
             fin = a.offset + k * paso
             if fin - t < minimo - 1e-6:
@@ -974,46 +1006,31 @@ class _Asignador:
             k -= 1
         return mejor[1] if mejor else None
 
-    def _quizas_hold(self, evento, nota: Nota, siguiente: float | None, en_rafaga: bool):
-        p, a, o = self.p, self.a, self.o
-        if o.holds <= 0 or len(self.holds_activos) >= self.limite_holds:
+    def _quizas_hold(self, evento, nuevas: list):
+        """Sostiene una de las notas del evento si el plan de holds lo eligió."""
+        a = self.a
+        t = nuevas[0].tiempo
+        if evento.hold_plan <= t or len(self.holds_activos) >= self.limite_holds:
             return
-        minimo = p.hold_min_pulsos * a.periodo
-        espacio = (siguiente - nota.tiempo) if siguiente is not None else 4 * a.periodo
-        if evento.hold_hasta > nota.tiempo:
-            # El relleno de huecos pidió cubrir este espacio con un hold.
-            objetivo = evento.hold_hasta
-            probabilidad = min(1.0, 0.6 + 0.4 * o.holds)
-        else:
-            # El hold dura lo que dura el instrumento que lleva la nota (voz, bajo...).
-            capa = evento.capa_sostenida()
-            sostenido = a.sostenido(nota.tiempo, capa=capa)
-            # Margen del 15 %: una nota de un pulso que se apaga un poco antes sigue valiendo.
-            if sostenido >= 0.85 * minimo:
-                sostenido = max(sostenido, minimo)
-                objetivo = nota.tiempo + sostenido
-                probabilidad = p.prob_hold * min(o.holds, 1.5) * (0.5 + 1.2 * evento.melodico)
-                if capa is not None and capa == evento.destacado:
-                    probabilidad *= 1.5  # el instrumento destacado sostiene: se nota más
-            elif o.holds > 1.0:
-                # Sobre 1×, estilo LN: también se alargan notas cortas; la otra mano
-                # sigue tocando y el hold se suelta en una nota cercana.
-                objetivo = nota.tiempo + max(minimo, a.periodo)
-                probabilidad = 0.3 * (o.holds - 1.0) * (1.0 if p.nombre in ("Hard", "Insane") else 0.6)
-            else:
+        # Se prefiere una columna distinta de la del último hold; si la única posible es
+        # la misma y el hold anterior fue hace poco, se deja como nota: variedad.
+        ultima_columna = self.holds_hechos[-1][2] if self.holds_hechos else None
+        candidatas = [n for n in nuevas if n.columna != ultima_columna]
+        if not candidatas:
+            relleno = evento.hold_hasta > t  # cubre un hueco: se aplica igual
+            if not relleno and self.holds_hechos and t - self.holds_hechos[-1][1] < 2 * a.periodo:
                 return
-            if espacio >= a.periodo:
-                probabilidad *= 2.0  # hay aire después: un hold lo llena
-            if en_rafaga:
-                probabilidad *= 0.35
-        if self.rng.random() >= probabilidad:
-            return
-        fin = self._fin_musical(nota.tiempo, min(objetivo, a.duracion - 0.05), minimo)
+            candidatas = nuevas
+        nota = candidatas[int(self.rng.integers(len(candidatas)))]
+        minimo = self.p.hold_min_pulsos * a.periodo
+        objetivo = evento.hold_plan
+        fin = self._fin_musical(nota.tiempo, min(objetivo, a.duracion - 0.05), minimo, self.hold_maximo)
         if fin is None:
             return
         nota.fin = fin
         self.fin_hold[nota.columna] = fin
         self.holds_activos[nota.columna] = nota
+        self.holds_hechos.append((nota.tiempo, fin, nota.columna))
 
     def _recortar_hold(self, t: float) -> bool:
         """Si todas las columnas están ocupadas, acorta el hold que termina antes."""
@@ -1051,18 +1068,82 @@ class _Asignador:
                     self.uso[nota.columna] += 1
                 self.total_notas += len(nuevas)
                 self.notas.extend(nuevas)
-                if i + 1 < len(frase):
-                    siguiente = frase[i + 1].tiempo
-                elif indice_frase + 1 < len(frases):
-                    siguiente = frases[indice_frase + 1][0].tiempo
-                else:
-                    siguiente = None
                 # En ráfagas solo se sostiene al inicio o al final de la frase.
-                if not rapido or i in (0, len(frase) - 1) or evento.hold_hasta or self.o.holds > 1.0:
-                    en_rafaga = rapido and i < len(frase) - 1
-                    self._quizas_hold(evento, nuevas[int(self.rng.integers(len(nuevas)))],
-                                      siguiente, en_rafaga)
+                self._quizas_hold(evento, nuevas)
         return self.notas
+
+
+# ---------------------------------------------------------------------------
+# Plan de holds
+# ---------------------------------------------------------------------------
+
+def planificar_holds(analisis: Analisis, eventos: list, perfil: PerfilDificultad,
+                     opciones: OpcionesGeneracion) -> None:
+    """Decide qué eventos serán holds, mirando toda la canción a la vez.
+
+    Cada nota que se sostiene recibe un puntaje: cuánto dura de verdad (en su
+    capa), si es del instrumento destacado y si es melódica. Se eligen de mayor
+    a menor respetando un largo máximo, una pausa entre holds, que no haya dos
+    eventos seguidos con hold y un tope de tiempo cubierto por holds. Así los
+    holds caen en las notas más largas y no tapan la canción.
+    """
+    if opciones.holds <= 0 or not eventos:
+        return
+    periodo = analisis.periodo
+    minimo = perfil.hold_min_pulsos * periodo
+    tope = hold_maximo(perfil, periodo, opciones.holds)
+    pausa_base = _HOLD_PAUSA[perfil.nombre] * periodo / max(1.0, opciones.holds)
+    cobertura = _HOLD_COBERTURA * min(opciones.holds, 2.5)
+    ventana = _HOLD_VENTANA * periodo
+    consecutivos = opciones.holds >= 1.8  # estilo LN marcado: se permiten holds seguidos
+
+    candidatos = []
+    for i, e in enumerate(eventos):
+        rapido = any(0 < abs(eventos[j].tiempo - e.tiempo) < periodo / 3 + 1e-3
+                     for j in (i - 1, i + 1) if 0 <= j < len(eventos))
+        if e.hold_hasta > e.tiempo:
+            # El relleno de huecos lo pidió (ya respetando pausa y cobertura).
+            candidatos.append((100.0, i, e.hold_hasta - e.tiempo, True))
+            continue
+        capa = e.capa_sostenida()
+        if capa is not None and opciones.peso(capa, e.tiempo) > 0:
+            sostenido = analisis.sostenido(e.tiempo, capa=capa)
+            # Margen del 15 %: una nota de un pulso que se apaga un poco antes sigue valiendo.
+            if sostenido >= 0.85 * minimo:
+                duracion = min(max(sostenido, minimo), tope)
+                puntaje = (duracion / periodo) * (0.4 + e.melodico)
+                if capa == e.destacado:
+                    puntaje *= 1.5
+                if rapido:
+                    puntaje *= 0.35
+                candidatos.append((puntaje, i, duracion, False))
+                continue
+        if opciones.holds > 1.0:
+            # Estilo LN: también se alargan notas cortas mientras la otra mano toca.
+            duracion = min(max(minimo, periodo), tope)
+            candidatos.append((0.3 * (opciones.holds - 1.0), i, duracion, False))
+
+    rng = np.random.default_rng(opciones.semilla + 7)
+    candidatos.sort(key=lambda c: -(c[0] + rng.uniform(0, 0.05)))
+    elegidos: list[tuple[float, float]] = []   # (inicio, fin), ordenados
+    indices: set[int] = set()
+    for puntaje, i, duracion, forzado in candidatos:
+        if puntaje < 0.25:
+            break
+        e = eventos[i]
+        inicio, fin = e.tiempo, e.tiempo + duracion
+        if not forzado:
+            pausa = pausa_base * (0.5 if e.capa_sostenida() == e.destacado else 1.0)
+            if any(inicio < f + pausa and fin + pausa > a for a, f in elegidos):
+                continue
+            if not consecutivos and (i - 1 in indices or i + 1 in indices):
+                continue
+            cubierto = sum(max(0.0, min(f, fin) - max(a, fin - ventana)) for a, f in elegidos)
+            if (cubierto + duracion) / ventana > cobertura:
+                continue
+        elegidos.append((inicio, fin))
+        indices.add(i)
+        e.hold_plan = fin
 
 
 # ---------------------------------------------------------------------------
@@ -1074,6 +1155,7 @@ def generar_mapa(analisis: Analisis, opciones: OpcionesGeneracion) -> Mapa:
     eventos = construir_eventos(analisis, perfil, opciones)
     tramos = tramos_destacados(analisis, eventos)
     eventos = seleccionar_eventos(analisis, eventos, perfil, opciones)
+    planificar_holds(analisis, eventos, perfil, opciones)
     asignador = _Asignador(analisis, opciones, perfil)
     notas = asignador.asignar(eventos)
     notas = [n for n in notas if 0 <= n.tiempo < analisis.duracion]

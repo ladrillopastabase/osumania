@@ -80,8 +80,14 @@ def test_holds_siguen_a_la_voz(turnos, dificultad):
         candidatos = [n for n in holds if abs(n.tiempo - t) < 0.03]
         if candidatos:
             errores.append(abs((candidatos[0].fin - candidatos[0].tiempo) - duracion) / analisis.periodo)
-    assert len(errores) >= 0.5 * len(voces)  # la mayoría de las notas largas son holds
-    assert np.mean(errores) <= 0.5  # y duran lo que dura la nota cantada
+    largas = [(t, d) for t, d in voces if d >= 1.5 * analisis.periodo]
+    cortas = [(t, d) for t, d in voces if d < 1.5 * analisis.periodo]
+    con_hold = lambda lista: sum(any(abs(n.tiempo - t) < 0.03 for n in holds) for t, _ in lista)
+    # Los holds van a las notas más largas de la voz, no a las cortas…
+    assert con_hold(largas) >= 0.6 * len(largas)
+    assert con_hold(cortas) <= 0.25 * len(cortas)
+    # …y duran lo que dura la nota cantada.
+    assert np.mean(errores) <= 0.5
 
 
 def test_influencia_por_seccion(turnos):

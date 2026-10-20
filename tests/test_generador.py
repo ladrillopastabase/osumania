@@ -87,8 +87,11 @@ def realista():
 def test_sin_notas_fantasma(realista, teclas, dificultad):
     analisis, verdad = realista
     mapa = generar_mapa(analisis, OpcionesGeneracion(teclas, dificultad))
-    distancias = [np.min(np.abs(verdad - n.tiempo)) for n in mapa.notas]
-    assert max(distancias) < 0.025  # toda nota coincide con algo que suena
+    for n in mapa.notas:
+        # Toda nota coincide con algo que suena, o es relleno justo en el pulso
+        # (en un pasaje sostenido, para no dejar un hueco).
+        en_pulso = abs(((n.tiempo - analisis.offset) / analisis.periodo) % 1 - 0.5) > 0.5 - 1e-4
+        assert np.min(np.abs(verdad - n.tiempo)) < 0.025 or en_pulso
 
 
 @pytest.mark.parametrize("dificultad", ["Hard", "Insane"])
@@ -180,7 +183,7 @@ def test_coro_sostenido_no_queda_vacio():
     mapa = generar_mapa(analisis, OpcionesGeneracion(4, "Hard"))
     assert _hueco_maximo(mapa, inicio_coro, fin_coro) <= 1.05 * analisis.periodo
     holds = [n for n in mapa.notas if n.es_hold and inicio_coro <= n.tiempo < fin_coro]
-    assert len(holds) >= 8  # las notas largas de la melodía se vuelven holds
+    assert len(holds) >= 4  # las notas largas de la melodía se vuelven holds (sin taparlo todo)
 
 
 @pytest.mark.parametrize("dificultad", ["Normal", "Hard", "Insane"])
@@ -195,7 +198,7 @@ def test_control_de_holds(realista, dificultad):
     sin, normal, ln = proporcion(0.0), proporcion(1.0), proporcion(2.5)
     assert sin == 0
     assert 0 < normal < ln
-    assert ln >= 0.1
+    assert ln >= 0.05
 
 
 def test_holds_terminan_en_puntos_musicales(realista):
@@ -208,3 +211,27 @@ def test_holds_terminan_en_puntos_musicales(realista):
         relativo = [(n.fin - analisis.offset) / (analisis.periodo / 2) for n in holds]
         en_rejilla = [abs(r - round(r)) < 1e-3 for r in relativo]
         assert np.mean(np.logical_or(en_nota, en_rejilla)) >= 0.95
+
+
+@pytest.mark.parametrize("dificultad", ["Easy", "Normal", "Hard", "Insane"])
+def test_holds_variados_y_acotados(realista, dificultad):
+    """Holds cortos, espaciados y que no tapan la canción (con el control en 1×)."""
+    from motor.generador import hold_maximo
+    from motor.dificultades import perfil
+    analisis, _ = realista
+    mapa = generar_mapa(analisis, OpcionesGeneracion(4, dificultad))
+    holds = [n for n in mapa.notas if n.es_hold]
+    tope = hold_maximo(perfil(dificultad, 4), analisis.periodo, 1.0)
+    assert all(n.fin - n.tiempo <= tope + 1e-6 for n in holds)
+    tiempos = np.arange(mapa.notas[0].tiempo, mapa.notas[-1].tiempo, 0.01)
+    activo = np.zeros(tiempos.size, bool)
+    for n in holds:
+        activo |= (tiempos >= n.tiempo) & (tiempos < n.fin)
+    assert activo.mean() <= 0.35  # la mayor parte del tiempo no hay un hold apretado
+    eventos = sorted({n.tiempo for n in mapa.notas})
+    con_hold = {n.tiempo for n in holds}
+    racha = maxima = 0
+    for t in eventos:
+        racha = racha + 1 if t in con_hold else 0
+        maxima = max(maxima, racha)
+    assert maxima <= 2  # nunca una seguidilla de holds
