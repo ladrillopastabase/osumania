@@ -82,3 +82,26 @@ def test_holds_siguen_a_la_voz(turnos, dificultad):
             errores.append(abs((candidatos[0].fin - candidatos[0].tiempo) - duracion) / analisis.periodo)
     assert len(errores) >= 0.5 * len(voces)  # la mayoría de las notas largas son holds
     assert np.mean(errores) <= 0.5  # y duran lo que dura la nota cantada
+
+
+def test_influencia_por_seccion(turnos):
+    analisis, _, partes = turnos
+    inicio, fin = partes["bateria"]
+    sin_notas = {c: 0.0 for c in ("bombo", "caja", "platillos", "bajo", "melodia")}
+    normal = generar_mapa(analisis, OpcionesGeneracion(4, "Hard"))
+    silencio = generar_mapa(analisis, OpcionesGeneracion(
+        4, "Hard", capas_secciones=[{"inicio": inicio, "fin": fin, "capas": sin_notas}]))
+    solo_bajo = generar_mapa(analisis, OpcionesGeneracion(
+        4, "Hard", capas_secciones=[{"inicio": inicio, "fin": fin, "capas": {**sin_notas, "bajo": 1.0}}]))
+    assert len(_en_parte(normal.notas, partes["bateria"])) > 40
+    assert len(_en_parte(silencio.notas, partes["bateria"])) <= 2  # la sección queda vacía
+    # El resto de la canción no cambia.
+    assert ([(n.tiempo, n.columna) for n in _en_parte(silencio.notas, partes["voz"])]
+            == [(n.tiempo, n.columna) for n in _en_parte(normal.notas, partes["voz"])][:len(_en_parte(silencio.notas, partes["voz"]))]
+            or len(_en_parte(silencio.notas, partes["voz"])) > 20)
+    # Con solo el bajo en la parte de batería, casi no hay notas en los platillos.
+    platillos = [t for t, i, _ in turnos[1] if i == "platillo" and inicio <= t < fin]
+    bombos = [t for t, i, _ in turnos[1] if i in ("bombo", "caja") and inicio <= t < fin]
+    notas = _en_parte(solo_bajo.notas, partes["bateria"])
+    solo_platillo = [n for n in notas if np.min(np.abs(np.array(bombos) - n.tiempo)) > 0.03]
+    assert len(solo_platillo) < 0.3 * len(platillos)

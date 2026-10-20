@@ -2,14 +2,31 @@
 
 const $ = (id) => document.getElementById(id);
 
-const COLORES_SECCION = {
-  "tranquila": "#4b6b8a",
-  "media": "#6a5acd",
-  "intensa": "#d0608f",
-  "clímax": "#ffb347",
-};
+// ---------------------------------------------------------------- constantes
 
-// Colores clásicos de skin mania por número de teclas.
+const CAPAS = ["bombo", "caja", "platillos", "bajo", "melodia"];
+const NOMBRES_CAPA = {
+  bombo: "Bombo", caja: "Caja", platillos: "Platillos", bajo: "Bajo", melodia: "Melodía / voz",
+};
+const DEFECTO_CAPAS = [100, 90, 50, 60, 100];
+const PREAJUSTES = {
+  equilibrado: { nombre: "Equilibrado", valores: DEFECTO_CAPAS },
+  bateria: { nombre: "Batería", valores: [100, 100, 80, 20, 20] },
+  melodia: { nombre: "Melodía / voz", valores: [30, 25, 10, 40, 100] },
+  bajo: { nombre: "Bajo", valores: [50, 40, 10, 100, 40] },
+  todo: { nombre: "Todo", valores: [100, 100, 100, 100, 100] },
+};
+// Opciones por sección: además de los preajustes, heredar lo global, silenciar o personalizar.
+const OPCIONES_SECCION = [
+  ["global", "Igual que toda la canción"],
+  ...Object.entries(PREAJUSTES).map(([clave, p]) => [clave, p.nombre]),
+  ["silencio", "Sin notas"],
+  ["personalizado", "Personalizado…"],
+];
+const NOMBRE_ETIQUETA = { "tranquila": "Tranquila", "media": "Media", "intensa": "Intensa", "clímax": "Clímax" };
+const VARIABLE_ETIQUETA = { "tranquila": "--s-tranquila", "media": "--s-media", "intensa": "--s-intensa", "clímax": "--s-climax" };
+
+// Colores clásicos de skin mania (el campo de juego es oscuro en ambos temas).
 const COLORES_COLUMNA = {
   4: ["#e8e8f0", "#66ccff", "#66ccff", "#e8e8f0"],
   7: ["#e8e8f0", "#66ccff", "#e8e8f0", "#ffcc66", "#e8e8f0", "#66ccff", "#e8e8f0"],
@@ -17,17 +34,152 @@ const COLORES_COLUMNA = {
 
 const estado = {
   archivo: null,
-  resultado: null,
+  trabajo: null,       // canción ya subida/descargada y analizada en el servidor
+  fuenteNueva: false,  // el usuario eligió otra canción desde la última carga
+  resultado: null,     // última generación
   mapa: null,
   animacion: null,
   fondo: null,
-  trabajo: null,       // canción ya subida/descargada y analizada en el servidor
-  fuenteNueva: false,  // el usuario eligió otra canción desde la última carga
+  recorte: null,       // {inicio, fin} en segundos de la canción completa, o null
+  secciones: [],       // por sección: {opcion, valores}
+  arrastre: null,      // "inicio" | "fin" mientras se arrastra un borde del recorte
 };
 
-// ---------------------------------------------------------------- formulario
+// ---------------------------------------------------------------- utilidades
+
+function css(variable) {
+  return getComputedStyle(document.documentElement).getPropertyValue(variable).trim();
+}
+
+function conAlfa(color, alfa) {
+  const hex = color.replace("#", "");
+  const n = parseInt(hex.length === 3 ? hex.split("").map((c) => c + c).join("") : hex.slice(0, 6), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alfa})`;
+}
+
+function formatoTiempo(segundos, decimas = false) {
+  const s = Math.max(0, segundos);
+  const minutos = Math.floor(s / 60);
+  const resto = s - minutos * 60;
+  const texto = decimas ? resto.toFixed(1).padStart(4, "0") : String(Math.floor(resto)).padStart(2, "0");
+  return `${minutos}:${texto}`;
+}
+
+function leerTiempo(texto) {
+  const limpio = String(texto).trim().replace(",", ".");
+  if (!limpio) return NaN;
+  if (limpio.includes(":")) {
+    const [m, s] = limpio.split(":");
+    return Number(m) * 60 + Number(s);
+  }
+  return Number(limpio);
+}
+
+function ajustarCanvas(canvas) {
+  const escala = window.devicePixelRatio || 1;
+  const ancho = canvas.clientWidth;
+  const alto = canvas.clientHeight;
+  if (canvas.width !== Math.round(ancho * escala) || canvas.height !== Math.round(alto * escala)) {
+    canvas.width = Math.round(ancho * escala);
+    canvas.height = Math.round(alto * escala);
+  }
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(escala, 0, 0, escala, 0, 0);
+  return [ctx, ancho, alto];
+}
+
+function mostrarEstado(texto, esError = false) {
+  const nodo = $("estado");
+  nodo.textContent = texto;
+  nodo.classList.toggle("error", esError);
+}
+
+// ---------------------------------------------------------------- tema
+
+const TEMAS = [["auto", "☀☾", "Auto"], ["claro", "☀", "Claro"], ["oscuro", "☾", "Oscuro"]];
+
+function temaGuardado() {
+  try { return localStorage.getItem("tema") || "auto"; } catch (e) { return "auto"; }
+}
+
+function aplicarTema(tema) {
+  const raiz = document.documentElement;
+  if (tema === "claro") raiz.dataset.theme = "light";
+  else if (tema === "oscuro") raiz.dataset.theme = "dark";
+  else delete raiz.dataset.theme;
+  const [, icono, nombre] = TEMAS.find(([clave]) => clave === tema) || TEMAS[0];
+  $("tema-icono").textContent = icono;
+  $("tema-nombre").textContent = nombre;
+  try { localStorage.setItem("tema", tema); } catch (e) { /* sin almacenamiento */ }
+  redibujarTodo();
+}
+
+$("tema").addEventListener("click", () => {
+  const actual = temaGuardado();
+  const indice = TEMAS.findIndex(([clave]) => clave === actual);
+  aplicarTema(TEMAS[(indice + 1) % TEMAS.length][0]);
+});
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => redibujarTodo());
+
+// ---------------------------------------------------------------- controles de capas
+
+function crearDeslizadorCapa(contenedor, capa, valor, alCambiar, nombreInput) {
+  const fila = document.createElement("label");
+  fila.className = "deslizador capa-fila";
+  fila.innerHTML = `<span><i class="punto" style="background:var(--c-${capa})"></i>${NOMBRES_CAPA[capa]}</span>
+    <input type="range" min="0" max="100" step="5" value="${valor}"${nombreInput ? ` name="${nombreInput}"` : ""}>
+    <output>${valor}%</output>`;
+  const entrada = fila.querySelector("input");
+  entrada.addEventListener("input", () => {
+    fila.querySelector("output").textContent = `${entrada.value}%`;
+    alCambiar?.();
+  });
+  contenedor.appendChild(fila);
+  return entrada;
+}
 
 const formulario = $("formulario");
+const entradasGlobales = CAPAS.map((capa, i) =>
+  crearDeslizadorCapa($("controles-globales"), capa, DEFECTO_CAPAS[i], marcarPreajusteGlobal, `capa_${capa}`));
+
+function valoresGlobales() {
+  return entradasGlobales.map((e) => Number(e.value));
+}
+
+function fijarGlobales(valores) {
+  entradasGlobales.forEach((entrada, i) => {
+    entrada.value = valores[i];
+    entrada.closest("label").querySelector("output").textContent = `${valores[i]}%`;
+  });
+  marcarPreajusteGlobal();
+}
+
+for (const [clave, preajuste] of Object.entries(PREAJUSTES)) {
+  const boton = document.createElement("button");
+  boton.type = "button";
+  boton.className = "ficha";
+  boton.dataset.preajuste = clave;
+  boton.textContent = preajuste.nombre;
+  boton.addEventListener("click", () => fijarGlobales(preajuste.valores));
+  $("preajustes-globales").appendChild(boton);
+}
+
+function marcarPreajusteGlobal() {
+  const actual = valoresGlobales().join(",");
+  document.querySelectorAll("#preajustes-globales [data-preajuste]").forEach((b) => {
+    b.classList.toggle("activa", PREAJUSTES[b.dataset.preajuste].valores.join(",") === actual);
+  });
+}
+marcarPreajusteGlobal();
+
+for (const nombre of ["densidad", "holds"]) {
+  const control = formulario.elements[nombre];
+  const salida = $(`v-${nombre}`);
+  control.addEventListener("input", () => { salida.textContent = `${Number(control.value).toFixed(1)}×`; });
+}
+
+// ---------------------------------------------------------------- fuente de audio
+
 const zona = $("zona-audio");
 const entradaAudio = $("audio");
 
@@ -50,12 +202,13 @@ function elegirArchivo(archivo) {
 
 entradaAudio.addEventListener("change", () => elegirArchivo(entradaAudio.files[0]));
 $("url").addEventListener("input", () => {
-  if ($("url").value.trim()) estado.fuenteNueva = true;
-  if (!$("url").value.trim() || !estado.archivo) return;
-  // Un enlace reemplaza al archivo elegido.
-  estado.archivo = null;
-  entradaAudio.value = "";
-  $("nombre-audio").textContent = "Arrastra o elige un audio";
+  if (!$("url").value.trim()) return;
+  estado.fuenteNueva = true;
+  if (estado.archivo) {
+    estado.archivo = null;
+    entradaAudio.value = "";
+    $("nombre-audio").textContent = "Arrastra o elige un audio";
+  }
 });
 ["dragenter", "dragover"].forEach((ev) => zona.addEventListener(ev, (e) => {
   e.preventDefault();
@@ -74,48 +227,11 @@ zona.addEventListener("drop", (e) => {
   elegirArchivo(archivo);
 });
 
-for (const nombre of ["densidad", "holds"]) {
-  const control = formulario.elements[nombre];
-  const salida = $(`v-${nombre}`);
-  control.addEventListener("input", () => { salida.textContent = `${Number(control.value).toFixed(1)}×`; });
-}
-
-// Influencia de cada capa: deslizadores en % y preajustes.
-const CAPAS = ["bombo", "caja", "platillos", "bajo", "melodia"];
-function actualizarMezcla() {
-  for (const capa of CAPAS) {
-    $(`v-capa_${capa}`).textContent = `${formulario.elements[`capa_${capa}`].value}%`;
-  }
-  const actual = CAPAS.map((c) => formulario.elements[`capa_${c}`].value).join(",");
-  document.querySelectorAll("[data-mezcla]").forEach((b) => b.classList.toggle("activa", b.dataset.mezcla === actual));
-}
-for (const capa of CAPAS) {
-  formulario.elements[`capa_${capa}`].addEventListener("input", actualizarMezcla);
-}
-document.querySelectorAll("[data-mezcla]").forEach((boton) => boton.addEventListener("click", () => {
-  boton.dataset.mezcla.split(",").forEach((v, i) => { formulario.elements[`capa_${CAPAS[i]}`].value = v; });
-  actualizarMezcla();
-}));
-actualizarMezcla();
-
-function valoresMarcados(nombre) {
-  return [...formulario.querySelectorAll(`input[name="${nombre}"]:checked`)].map((c) => c.value).join(",");
-}
-
-function usarTrabajo(json) {
-  estado.trabajo = json;
-  estado.fuenteNueva = false;
-  $("cancion-cargada").hidden = false;
-  $("fuente").hidden = true;
-  $("cancion-nombre").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo}`;
-  const a = json.analisis;
-  $("cancion-detalle").textContent = `${formatoTiempo(a.duracion)} · ${a.bpm} BPM · ${json.fuente || ""}`;
-  $("boton-generar").textContent = "Regenerar con estos ajustes";
-}
-
 $("otra-cancion").addEventListener("click", () => {
   estado.trabajo = null;
   estado.archivo = null;
+  estado.recorte = null;
+  estado.secciones = [];
   entradaAudio.value = "";
   $("url").value = "";
   $("titulo").value = "";
@@ -126,11 +242,50 @@ $("otra-cancion").addEventListener("click", () => {
   $("boton-generar").textContent = "Generar beatmaps";
 });
 
+function usarTrabajo(json) {
+  const nuevo = !estado.trabajo || estado.trabajo.id !== json.id;
+  const seccionesCambiaron = !estado.trabajo
+    || JSON.stringify(estado.trabajo.analisis.secciones) !== JSON.stringify(json.analisis.secciones);
+  estado.trabajo = json;
+  estado.fuenteNueva = false;
+  if (nuevo) estado.recorte = null;
+  if (nuevo || seccionesCambiaron) {
+    estado.secciones = json.analisis.secciones.map(() => ({ opcion: "global", valores: valoresGlobales() }));
+  }
+  $("cancion-cargada").hidden = false;
+  $("fuente").hidden = true;
+  $("cancion-nombre").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo}`;
+  $("cancion-detalle").textContent = `${formatoTiempo(json.analisis.duracion)} · ${json.analisis.bpm} BPM`;
+  $("boton-generar").textContent = "Regenerar con estos ajustes";
+}
+
+// ---------------------------------------------------------------- envío
+
 async function pedir(url, datos) {
   const respuesta = await fetch(url, { method: "POST", body: datos });
   const json = await respuesta.json().catch(() => ({ error: "Respuesta inválida del servidor." }));
   if (!respuesta.ok) throw new Error(json.error || "Error en el servidor.");
   return json;
+}
+
+function valoresMarcados(nombre) {
+  return [...formulario.querySelectorAll(`input[name="${nombre}"]:checked`)].map((c) => c.value).join(",");
+}
+
+function valoresDeSeccion(ajuste) {
+  if (ajuste.opcion === "global") return null;
+  if (ajuste.opcion === "silencio") return CAPAS.map(() => 0);
+  if (ajuste.opcion === "personalizado") return ajuste.valores;
+  return PREAJUSTES[ajuste.opcion].valores;
+}
+
+function ajustesPorSeccion() {
+  if (!estado.trabajo) return [];
+  return estado.trabajo.analisis.secciones.flatMap((s, i) => {
+    const valores = estado.secciones[i] ? valoresDeSeccion(estado.secciones[i]) : null;
+    if (!valores) return [];
+    return [{ inicio: s.inicio, fin: s.fin, capas: Object.fromEntries(CAPAS.map((c, j) => [c, valores[j] / 100])) }];
+  });
 }
 
 formulario.addEventListener("submit", async (e) => {
@@ -141,7 +296,8 @@ formulario.addEventListener("submit", async (e) => {
     mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
     return;
   }
-  if (CAPAS.every((c) => Number(formulario.elements[`capa_${c}`].value) === 0)) {
+  const porSeccion = ajustesPorSeccion();
+  if (valoresGlobales().every((v) => v === 0) && !porSeccion.some((s) => Object.values(s.capas).some((v) => v > 0))) {
     mostrarEstado("Al menos un instrumento tiene que tener influencia.", true);
     return;
   }
@@ -171,24 +327,33 @@ formulario.addEventListener("submit", async (e) => {
       usarTrabajo(trabajo);
     }
 
-    // Paso 2: generar (repetible con otros datos y parámetros).
+    // Paso 2: generar (repetible con otros datos, parámetros, secciones y recorte).
     const datos = new FormData();
     datos.append("teclas", teclas);
     datos.append("dificultades", dificultades);
     for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
       datos.append(campo, formulario.elements[campo].value);
     }
-    for (const capa of CAPAS) {
-      datos.append(`capa_${capa}`, Number(formulario.elements[`capa_${capa}`].value) / 100);
+    CAPAS.forEach((capa, i) => datos.append(`capa_${capa}`, valoresGlobales()[i] / 100));
+    const secciones = ajustesPorSeccion();
+    if (secciones.length) datos.append("capas_secciones", JSON.stringify(secciones));
+    const recorte = recorteVigente();
+    if (recorte) {
+      datos.append("recorte_inicio", recorte.inicio.toFixed(3));
+      datos.append("recorte_fin", recorte.fin.toFixed(3));
+      datos.append("recorte_compas", $("recorte-compas").checked ? "1" : "0");
     }
+    datos.append("fundido", $("fundido").value);
     const imagen = $("imagen").files[0];
     if (imagen && !imagenUsada) datos.append("imagen", imagen);
     mostrarEstado("Generando mapas…");
     const json = await pedir(`/api/trabajos/${estado.trabajo.id}/generar`, datos);
     $("imagen").value = "";
     usarTrabajo(json);
-    const reanalisis = json.tiempo_analisis > 0 ? ` (se reanalizó con el BPM/offset nuevo en ${json.tiempo_analisis}s)` : "";
-    mostrarEstado(`Listo: ${json.mapas.length} mapas${reanalisis}.`);
+    if (json.recorte) estado.recorte = { inicio: json.recorte.inicio, fin: json.recorte.fin };
+    const extra = json.recorte ? ` · recorte ${formatoTiempo(json.recorte.inicio, true)}–${formatoTiempo(json.recorte.fin, true)}` : "";
+    const reanalisis = json.tiempo_analisis > 0 ? " · reanalizado con el BPM/offset nuevo" : "";
+    mostrarEstado(`Listo: ${json.mapas.length} mapas${extra}${reanalisis}.`);
     mostrarResultados(json);
   } catch (error) {
     mostrarEstado(error.message, true);
@@ -197,38 +362,27 @@ formulario.addEventListener("submit", async (e) => {
   }
 });
 
-function mostrarEstado(texto, esError = false) {
-  const nodo = $("estado");
-  nodo.textContent = texto;
-  nodo.classList.toggle("error", esError);
-}
-
 // ---------------------------------------------------------------- resultados
-
-function formatoTiempo(segundos) {
-  const s = Math.max(0, Math.floor(segundos));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
-}
 
 function mostrarResultados(json) {
   estado.resultado = json;
+  $("vacio").hidden = true;
   $("resultados").hidden = false;
 
   const a = json.analisis;
+  $("titulo-resultado").textContent = `${json.metadatos.artista} - ${json.metadatos.titulo}`;
   const datos = [
     ["BPM", a.bpm],
     ["Offset", `${a.offset_ms} ms`],
     ["Duración", formatoTiempo(a.duracion)],
-    ["Onsets", a.onsets],
     ["Secciones", a.secciones.length],
+    ["Mapa", json.recorte ? `${formatoTiempo(json.reproduccion.duracion)} (recortado)` : "completo"],
   ];
   $("datos-analisis").innerHTML = datos.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
-  dibujarLineaTiempo(a);
-  $("leyenda-secciones").innerHTML = Object.entries(COLORES_SECCION)
-    .map(([k, c]) => `<span><i style="background:${c}"></i>${k}</span>`).join("")
-    + `<span><i style="background:#ffffff"></i>intensidad</span>`;
+  $("leyenda-secciones").innerHTML = Object.entries(VARIABLE_ETIQUETA)
+    .map(([k, v]) => `<span><i style="background:var(${v})"></i>${NOMBRE_ETIQUETA[k]}</span>`).join("")
+    + `<span><i style="background:var(--texto)"></i>Intensidad</span>`;
 
-  dibujarCapas(a, json.mapas.length ? json.mapas[0].destacados : null);
   const miniatura = $("miniatura");
   estado.fondo = null;
   if (json.fondo) {
@@ -241,8 +395,12 @@ function mostrarResultados(json) {
     miniatura.hidden = true;
   }
 
-  $("descargar-osz").href = json.osz;
+  actualizarCamposRecorte();
+  dibujarLineaTiempo();
+  renderizarSecciones();
+  dibujarCapas();
 
+  $("descargar-osz").href = json.osz;
   const lista = $("lista-mapas");
   lista.innerHTML = "";
   const selector = $("mapa-vista");
@@ -258,15 +416,14 @@ function mostrarResultados(json) {
       <h3>${mapa.version} <span class="estrellas">≈${e.estrellas_aprox}★</span></h3>
       <ul>
         <li>${e.notas} notas · ${e.holds} holds</li>
-        <li>${e.nps_medio} NPS medio · ${e.nps_max} NPS máx.</li>
-        <li>Acordes: ${Object.entries(e.acordes).map(([t, n]) => `${t}→${n}`).join(", ")}</li>
-        <li>Patrones (${e.largo_frase} notas por frase): ${Object.entries(e.patrones || {}).slice(0, 4).map(([t, n]) => `${t} ${n}`).join(", ")}</li>
+        <li>${e.nps_medio} NPS medio · ${e.nps_max} máx.</li>
+        <li>Patrones (${e.largo_frase} por frase): ${Object.entries(e.patrones || {}).slice(0, 3).map(([t, n]) => `${t} ${n}`).join(", ")}</li>
         ${errores}${avisos}
       </ul>
-      <span class="${v.valido ? "valido" : "invalido"}">${v.valido ? "✔ Mapa válido" : "✖ Con errores"}</span>
+      <span class="${v.valido ? "valido" : "invalido"}">${v.valido ? "✔ Válido" : "✖ Con errores"}</span>
       <div class="acciones">
-        <button type="button" data-ver="${mapa.indice}">Previsualizar</button>
-        <a class="boton" href="/api/trabajos/${json.id}/osu/${mapa.indice}">.osu</a>
+        <button type="button" class="boton-secundario" data-ver="${mapa.indice}">Ver</button>
+        <a class="boton-secundario" href="/api/trabajos/${json.id}/osu/${mapa.indice}">.osu</a>
       </div>`;
     lista.appendChild(tarjeta);
     const opcion = document.createElement("option");
@@ -280,38 +437,196 @@ function mostrarResultados(json) {
     $("campo").scrollIntoView({ behavior: "smooth", block: "center" });
   }));
 
-  if (!$("titulo").value) $("titulo").value = json.metadatos.titulo;
-  if (!$("artista").value) $("artista").value = json.metadatos.artista;
-  // Al regenerar se conserva la posición del audio y la dificultad que se estaba viendo.
+  // Al regenerar se conserva la dificultad que se estaba viendo (y la posición, sin recorte).
   const versionAnterior = estado.mapa ? estado.mapa.version : null;
-  if (!reproductor.src.endsWith(json.audio)) reproductor.src = json.audio;
+  const posicion = reproductor.currentTime;
+  if (reproductor.dataset.fuente !== json.audio) {
+    const anterior = reproductor.dataset.fuente;
+    const mismaCancion = anterior && anterior.split("?")[0] === json.audio.split("?")[0];
+    reproductor.src = json.audio;
+    reproductor.dataset.fuente = json.audio;
+    if (mismaCancion && !json.recorte) {
+      reproductor.addEventListener("loadedmetadata", () => { reproductor.currentTime = posicion; }, { once: true });
+    }
+  }
   const mismo = json.mapas.find((m) => m.version === versionAnterior) || json.mapas[0];
   selector.value = mismo.indice;
   elegirMapa(mismo.indice);
 }
 
-function ajustarCanvas(canvas) {
-  const escala = window.devicePixelRatio || 1;
-  const ancho = canvas.clientWidth;
-  const alto = canvas.clientHeight;
-  if (canvas.width !== Math.round(ancho * escala) || canvas.height !== Math.round(alto * escala)) {
-    canvas.width = Math.round(ancho * escala);
-    canvas.height = Math.round(alto * escala);
-  }
-  const ctx = canvas.getContext("2d");
-  ctx.setTransform(escala, 0, 0, escala, 0, 0);
-  return [ctx, ancho, alto];
+// ---------------------------------------------------------------- línea de tiempo y recorte
+
+function duracionCancion() {
+  return estado.trabajo ? estado.trabajo.analisis.duracion : 1;
 }
 
-const NOMBRES_CAPA = {
-  bombo: "Bombo", caja: "Caja", platillos: "Platillos", bajo: "Bajo", melodia: "Melodía / voz",
-};
+function recorteVigente() {
+  const r = estado.recorte;
+  if (!r) return null;
+  if (r.inicio <= 0.05 && r.fin >= duracionCancion() - 0.05) return null;
+  return r;
+}
 
-const COLORES_CAPA = {
-  bombo: [255, 79, 139], caja: [255, 169, 77], platillos: [255, 224, 102], bajo: [77, 171, 247], melodia: [177, 151, 252],
-};
+function ajustarACompas(t) {
+  const a = estado.trabajo.analisis;
+  const compas = (60 / a.bpm) * a.compas;
+  const offset = a.offset_ms / 1000;
+  let ajustado = offset + Math.round((t - offset) / compas) * compas;
+  if (ajustado < 0) ajustado += compas;
+  return Math.min(Math.max(ajustado, 0), a.duracion);
+}
 
-function dibujarCapas(a, destacados) {
+function actualizarCamposRecorte() {
+  const r = estado.recorte || { inicio: 0, fin: duracionCancion() };
+  $("recorte-inicio").value = formatoTiempo(r.inicio, true);
+  $("recorte-fin").value = formatoTiempo(r.fin, true);
+}
+
+function fijarBorde(borde, t, ajustar) {
+  const duracion = duracionCancion();
+  const r = estado.recorte || { inicio: 0, fin: duracion };
+  let valor = Math.min(Math.max(t, 0), duracion);
+  if (ajustar && $("recorte-compas").checked && valor > 0.05 && valor < duracion - 0.05) valor = ajustarACompas(valor);
+  if (borde === "inicio") r.inicio = Math.min(valor, r.fin - 10);
+  else r.fin = Math.max(valor, r.inicio + 10);
+  r.inicio = Math.max(0, r.inicio);
+  r.fin = Math.min(duracion, r.fin);
+  estado.recorte = r;
+  actualizarCamposRecorte();
+  dibujarLineaTiempo();
+  renderizarSecciones();
+}
+
+const lineaTiempo = $("linea-tiempo");
+
+function tiempoEn(evento) {
+  const rect = lineaTiempo.getBoundingClientRect();
+  return ((evento.clientX - rect.left) / rect.width) * duracionCancion();
+}
+
+lineaTiempo.addEventListener("pointerdown", (e) => {
+  if (!estado.trabajo) return;
+  const t = tiempoEn(e);
+  const r = estado.recorte || { inicio: 0, fin: duracionCancion() };
+  const porPixel = duracionCancion() / lineaTiempo.clientWidth;
+  // Se toma el borde más cercano (y si el clic cae lejos, ese borde salta ahí).
+  estado.arrastre = Math.abs(t - r.inicio) <= Math.abs(t - r.fin) ? "inicio" : "fin";
+  if (Math.abs(t - r[estado.arrastre]) > 10 * porPixel) fijarBorde(estado.arrastre, t, false);
+  lineaTiempo.setPointerCapture(e.pointerId);
+});
+lineaTiempo.addEventListener("pointermove", (e) => {
+  if (estado.arrastre) fijarBorde(estado.arrastre, tiempoEn(e), false);
+});
+lineaTiempo.addEventListener("pointerup", (e) => {
+  if (!estado.arrastre) return;
+  fijarBorde(estado.arrastre, tiempoEn(e), true);
+  estado.arrastre = null;
+});
+
+for (const [id, borde] of [["recorte-inicio", "inicio"], ["recorte-fin", "fin"]]) {
+  $(id).addEventListener("change", () => {
+    const t = leerTiempo($(id).value);
+    if (Number.isFinite(t)) fijarBorde(borde, t, true);
+    else actualizarCamposRecorte();
+  });
+}
+$("recorte-completa").addEventListener("click", () => {
+  estado.recorte = null;
+  actualizarCamposRecorte();
+  dibujarLineaTiempo();
+  renderizarSecciones();
+});
+
+function dibujarLineaTiempo() {
+  if (!estado.trabajo) return;
+  const a = estado.trabajo.analisis;
+  const [ctx, ancho, alto] = ajustarCanvas(lineaTiempo);
+  ctx.clearRect(0, 0, ancho, alto);
+  const x = (t) => (t / a.duracion) * ancho;
+  for (const s of a.secciones) {
+    ctx.fillStyle = conAlfa(css(VARIABLE_ETIQUETA[s.etiqueta] || "--s-media"), 0.55);
+    ctx.fillRect(x(s.inicio), 0, x(s.fin) - x(s.inicio) - 1, alto);
+  }
+  ctx.strokeStyle = css("--texto");
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  a.intensidad.forEach((v, i) => {
+    const px = (i / (a.intensidad.length - 1)) * ancho;
+    const py = alto - v * (alto - 14) - 6;
+    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  });
+  ctx.stroke();
+
+  // Recorte: lo que queda fuera se oscurece; los bordes se pueden arrastrar.
+  const r = estado.recorte || { inicio: 0, fin: a.duracion };
+  ctx.fillStyle = conAlfa(css("--fondo"), 0.72);
+  ctx.fillRect(0, 0, x(r.inicio), alto);
+  ctx.fillRect(x(r.fin), 0, ancho - x(r.fin), alto);
+  ctx.font = "600 11px system-ui, sans-serif";
+  ctx.textBaseline = "top";
+  for (const [borde, t] of [["inicio", r.inicio], ["fin", r.fin]]) {
+    const px = Math.min(Math.max(x(t), 2), ancho - 2);
+    ctx.fillStyle = css("--acento");
+    ctx.fillRect(px - 2, 0, 4, alto);
+    ctx.fillRect(px - 6, alto / 2 - 12, 12, 24);
+    const etiqueta = formatoTiempo(t, true);
+    const anchoTexto = ctx.measureText(etiqueta).width;
+    const tx = borde === "inicio" ? Math.min(px + 8, ancho - anchoTexto - 4) : Math.max(px - anchoTexto - 8, 4);
+    ctx.fillStyle = css("--tarjeta");
+    ctx.fillRect(tx - 3, 4, anchoTexto + 6, 16);
+    ctx.fillStyle = css("--texto");
+    ctx.fillText(etiqueta, tx, 6);
+  }
+}
+
+// ---------------------------------------------------------------- secciones
+
+function renderizarSecciones() {
+  if (!estado.trabajo) return;
+  const contenedor = $("secciones");
+  contenedor.innerHTML = "";
+  const r = estado.recorte || { inicio: 0, fin: duracionCancion() };
+  estado.trabajo.analisis.secciones.forEach((s, i) => {
+    const ajuste = estado.secciones[i] || (estado.secciones[i] = { opcion: "global", valores: valoresGlobales() });
+    const fuera = s.fin <= r.inicio + 0.01 || s.inicio >= r.fin - 0.01;
+    const fila = document.createElement("div");
+    fila.className = "seccion";
+    fila.style.opacity = fuera ? "0.5" : "1";
+    fila.innerHTML = `
+      <span class="franja" style="background:var(${VARIABLE_ETIQUETA[s.etiqueta] || "--s-media"})"></span>
+      <div><strong>${i + 1}. ${NOMBRE_ETIQUETA[s.etiqueta] || s.etiqueta}${s.kiai ? " · kiai" : ""}</strong>
+        <small>${formatoTiempo(s.inicio)} – ${formatoTiempo(s.fin)}${fuera ? " · fuera del recorte" : ""}</small></div>
+      <select aria-label="Instrumentos de la sección ${i + 1}">
+        ${OPCIONES_SECCION.map(([clave, nombre]) => `<option value="${clave}"${clave === ajuste.opcion ? " selected" : ""}>${nombre}</option>`).join("")}
+      </select>`;
+    const selector = fila.querySelector("select");
+    selector.addEventListener("change", () => {
+      ajuste.opcion = selector.value;
+      if (selector.value === "personalizado") ajuste.valores = valoresGlobales();
+      renderizarSecciones();
+    });
+    if (ajuste.opcion === "personalizado") {
+      const controles = document.createElement("div");
+      controles.className = "personalizado";
+      CAPAS.forEach((capa, j) => {
+        const entrada = crearDeslizadorCapa(controles, capa, ajuste.valores[j], () => {
+          ajuste.valores[j] = Number(entrada.value);
+        });
+      });
+      fila.appendChild(controles);
+    }
+    contenedor.appendChild(fila);
+  });
+}
+
+// ---------------------------------------------------------------- capas
+
+function dibujarCapas() {
+  const json = estado.resultado;
+  if (!json) return;
+  const a = json.analisis;
+  const desplazamiento = json.reproduccion ? json.reproduccion.inicio * 1000 : 0;
+  const destacados = json.mapas.length ? json.mapas[0].destacados : null;
   const [ctx, ancho, alto] = ajustarCanvas($("capas"));
   ctx.clearRect(0, 0, ancho, alto);
   const capas = CAPAS.filter((n) => a.capas && a.capas[n]).map((n) => [n, a.capas[n]]);
@@ -324,48 +639,26 @@ function dibujarCapas(a, destacados) {
   ctx.textBaseline = "middle";
   if (destacados) {
     // Primera fila: qué instrumento lleva cada tramo (lo que siguen las notas).
-    ctx.fillStyle = "#ece9f6";
+    ctx.fillStyle = css("--texto");
     ctx.fillText("Destacado", 4, fila / 2);
     for (const [inicio, fin, capa] of destacados) {
-      const c = COLORES_CAPA[capa] || [128, 128, 128];
-      ctx.fillStyle = `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
-      ctx.fillRect(etiqueta + (inicio / 1000) * escalaX, 3, Math.max(1, ((fin - inicio) / 1000) * escalaX - 1), fila - 6);
+      ctx.fillStyle = css(`--c-${capa}`) || "#888";
+      const x0 = etiqueta + ((inicio + desplazamiento) / 1000) * escalaX;
+      ctx.fillRect(x0, 3, Math.max(1, ((fin - inicio) / 1000) * escalaX - 1), fila - 6);
     }
   }
   capas.forEach(([nombre, capa], i) => {
     const y = (i + (destacados ? 1 : 0)) * fila;
-    const color = COLORES_CAPA[nombre];
-    ctx.fillStyle = "#a39fb8";
-    ctx.fillText(`${NOMBRES_CAPA[nombre] || nombre} (${capa.onsets})`, 4, y + fila / 2);
+    const color = css(`--c-${nombre}`);
+    ctx.fillStyle = css("--suave");
+    ctx.fillText(`${NOMBRES_CAPA[nombre]} (${capa.onsets})`, 4, y + fila / 2);
     const valores = capa.actividad;
     const paso = (ancho - etiqueta) / valores.length;
     valores.forEach((v, j) => {
-      ctx.fillStyle = `rgba(${color[0]}, ${color[1]}, ${color[2]}, ${(0.08 + 0.92 * v).toFixed(3)})`;
+      ctx.fillStyle = conAlfa(color, (0.06 + 0.94 * v).toFixed(3));
       ctx.fillRect(etiqueta + j * paso, y + 2, Math.ceil(paso), fila - 4);
     });
   });
-}
-
-function dibujarLineaTiempo(a) {
-  const [ctx, ancho, alto] = ajustarCanvas($("linea-tiempo"));
-  ctx.clearRect(0, 0, ancho, alto);
-  for (const s of a.secciones) {
-    const x0 = (s.inicio / a.duracion) * ancho;
-    const x1 = (s.fin / a.duracion) * ancho;
-    ctx.fillStyle = COLORES_SECCION[s.etiqueta] || "#555";
-    ctx.globalAlpha = 0.55;
-    ctx.fillRect(x0, 0, x1 - x0 - 1, alto);
-  }
-  ctx.globalAlpha = 1;
-  ctx.strokeStyle = "#ffffff";
-  ctx.lineWidth = 1.5;
-  ctx.beginPath();
-  a.intensidad.forEach((v, i) => {
-    const x = (i / (a.intensidad.length - 1)) * ancho;
-    const y = alto - v * (alto - 8) - 4;
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  });
-  ctx.stroke();
 }
 
 // ---------------------------------------------------------------- previsualización
@@ -381,31 +674,34 @@ function elegirMapa(indice) {
   dibujarCampo();
 }
 
+function duracionReproduccion() {
+  return estado.resultado ? estado.resultado.reproduccion.duracion : 1;
+}
+
 function dibujarDensidad() {
-  const canvas = $("densidad-mapa");
-  const [ctx, ancho, alto] = ajustarCanvas(canvas);
+  if (!estado.mapa) return;
+  const [ctx, ancho, alto] = ajustarCanvas($("densidad-mapa"));
   ctx.clearRect(0, 0, ancho, alto);
-  const duracion = estado.resultado.analisis.duracion * 1000;
+  const duracion = duracionReproduccion() * 1000;
   const columnas = Math.max(1, Math.floor(ancho / 3));
   const conteo = new Array(columnas).fill(0);
   for (const [t] of estado.mapa.notas) {
     conteo[Math.min(columnas - 1, Math.floor((t / duracion) * columnas))] += 1;
   }
   const maximo = Math.max(1, ...conteo);
-  ctx.fillStyle = "#ff66aa";
+  ctx.fillStyle = css("--acento");
   conteo.forEach((c, i) => {
     const h = (c / maximo) * (alto - 4);
     ctx.fillRect(i * 3, alto - h, 2, h);
   });
-  const x = (reproductor.currentTime * 1000 / duracion) * ancho;
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(x, 0, 2, alto);
+  ctx.fillStyle = css("--texto");
+  ctx.fillRect((reproductor.currentTime * 1000 / duracion) * ancho, 0, 2, alto);
 }
 
 $("densidad-mapa").addEventListener("click", (e) => {
   if (!estado.resultado) return;
   const rect = e.currentTarget.getBoundingClientRect();
-  reproductor.currentTime = ((e.clientX - rect.left) / rect.width) * estado.resultado.analisis.duracion;
+  reproductor.currentTime = ((e.clientX - rect.left) / rect.width) * duracionReproduccion();
   dibujarCampo();
   dibujarDensidad();
 });
@@ -439,12 +735,13 @@ function dibujarCampo() {
     ctx.fillRect(izquierda + c * anchoColumna, 0, anchoColumna, alto);
   }
 
-  // Líneas de compás.
+  // Líneas de compás (con el offset del audio que suena, recortado o no).
   const a = estado.resultado.analisis;
+  const offset = estado.resultado.reproduccion.offset_ms;
   const compasMs = (60000 / a.bpm) * a.compas;
   ctx.strokeStyle = "#ffffff22";
   ctx.lineWidth = 1;
-  let primero = a.offset_ms + Math.ceil((ahora - a.offset_ms) / compasMs) * compasMs;
+  const primero = offset + Math.ceil((ahora - offset) / compasMs) * compasMs;
   for (let t = primero; t < ahora + visibleMs; t += compasMs) {
     const y = lineaJuicio - (t - ahora) * velocidad;
     ctx.beginPath();
@@ -477,7 +774,6 @@ function dibujarCampo() {
     if (Math.abs(t - ahora) < 60) pulsadas[c] = true;
   }
 
-  // Línea de juicio y teclas.
   ctx.fillStyle = "#ff66aa";
   ctx.fillRect(izquierda, lineaJuicio, anchoColumna * k, 3);
   for (let c = 0; c < k; c++) {
@@ -485,7 +781,7 @@ function dibujarCampo() {
     ctx.fillRect(izquierda + c * anchoColumna + 4, lineaJuicio + 12, anchoColumna - 8, 36);
   }
 
-  const duracion = a.duracion;
+  const duracion = duracionReproduccion();
   $("reloj").textContent = `${formatoTiempo(reproductor.currentTime)} / ${formatoTiempo(duracion)}`;
   $("posicion").value = Math.round((reproductor.currentTime / duracion) * 1000);
 }
@@ -510,21 +806,29 @@ reproductor.addEventListener("play", () => {
 reproductor.addEventListener("pause", () => { $("reproducir").textContent = "▶ Reproducir"; });
 $("posicion").addEventListener("input", (e) => {
   if (!estado.resultado) return;
-  reproductor.currentTime = (Number(e.target.value) / 1000) * estado.resultado.analisis.duracion;
+  reproductor.currentTime = (Number(e.target.value) / 1000) * duracionReproduccion();
   dibujarCampo();
   dibujarDensidad();
 });
-$("velocidad").addEventListener("input", dibujarCampo);
+const salidaVelocidad = $("velocidad").closest("label").querySelector("output");
+function mostrarVelocidad() { salidaVelocidad.textContent = `${(Number($("velocidad").value) / 22).toFixed(1)}×`; }
+$("velocidad").addEventListener("input", () => { mostrarVelocidad(); dibujarCampo(); });
+mostrarVelocidad();
+
 document.addEventListener("keydown", (e) => {
   if (e.code === "Space" && !["INPUT", "SELECT", "TEXTAREA", "BUTTON"].includes(document.activeElement.tagName)) {
     e.preventDefault();
     alternarReproduccion();
   }
 });
-window.addEventListener("resize", () => {
+
+function redibujarTodo() {
   if (!estado.resultado) return;
-  dibujarLineaTiempo(estado.resultado.analisis);
-  dibujarCapas(estado.resultado.analisis, estado.resultado.mapas[0]?.destacados);
+  dibujarLineaTiempo();
+  dibujarCapas();
   dibujarDensidad();
   dibujarCampo();
-});
+}
+window.addEventListener("resize", redibujarTodo);
+
+aplicarTema(temaGuardado());

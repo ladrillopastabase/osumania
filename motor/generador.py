@@ -71,29 +71,51 @@ class OpcionesGeneracion:
     holds: float = 1.0
     semilla: int = 0
     capas: dict | None = None  # peso de cada capa, 0..1 (por defecto PESOS_CAPA_DEFECTO)
+    # Pesos distintos por tramo: [{"inicio": s, "fin": s, "capas": {capa: 0..1}}, ...].
+    # Fuera de esos tramos rigen los pesos globales de `capas`.
+    capas_secciones: list | None = None
 
-    def __post_init__(self):
-        pesos = dict(PESOS_CAPA_DEFECTO)
-        for nombre, valor in (self.capas or {}).items():
+    @staticmethod
+    def _normalizar_pesos(valores: dict, base: dict) -> dict:
+        pesos = dict(base)
+        for nombre, valor in (valores or {}).items():
             if nombre not in pesos:
                 raise ValueError(f"Capa desconocida: {nombre}")
             pesos[nombre] = float(np.clip(valor, 0.0, 1.0))
-        self.capas = pesos
+        return pesos
+
+    def __post_init__(self):
+        self.capas = self._normalizar_pesos(self.capas, PESOS_CAPA_DEFECTO)
+        tramos = []
+        for tramo in self.capas_secciones or []:
+            inicio, fin = float(tramo["inicio"]), float(tramo["fin"])
+            if fin > inicio:
+                tramos.append((inicio, fin, self._normalizar_pesos(tramo.get("capas"), self.capas)))
+        self.capas_secciones = sorted(tramos)
         if self.teclas not in (4, 7):
             raise ValueError("Solo se admiten 4K y 7K.")
         self.percusion = float(np.clip(self.percusion, 0.0, 1.0))
         self.melodia = float(np.clip(self.melodia, 0.0, 1.0))
         if self.percusion + self.melodia < 0.05:
             raise ValueError("La percusión y la melodía no pueden estar ambas en cero.")
-        if max(self.peso(c) for c in self.capas) < 0.02:
+        if max(self.peso(c) for c in self.capas) < 0.02 and not any(
+                max(p.values()) >= 0.02 for _, _, p in self.capas_secciones):
             raise ValueError("Todas las capas están en cero.")
         self.densidad = float(np.clip(self.densidad, 0.3, 2.5))
-
-    def peso(self, capa: str) -> float:
-        """Peso efectivo de una capa: control de la capa × control de su familia."""
-        familia = self.percusion if capa in PERCUSION else self.melodia
-        return 2.0 * familia * self.capas.get(capa, 0.0)
         self.holds = float(np.clip(self.holds, 0.0, 3.0))
+
+    def pesos_en(self, t: float | None) -> dict:
+        """Pesos de las capas que rigen en el instante `t` (de su sección o globales)."""
+        if t is not None:
+            for inicio, fin, pesos in self.capas_secciones:
+                if inicio <= t < fin:
+                    return pesos
+        return self.capas
+
+    def peso(self, capa: str, t: float | None = None) -> float:
+        """Peso efectivo de una capa en `t`: control de la capa × control de su familia."""
+        familia = self.percusion if capa in PERCUSION else self.melodia
+        return 2.0 * familia * self.pesos_en(t).get(capa, 0.0)
 
 
 @dataclass
@@ -270,7 +292,7 @@ def aplicar_aportes(analisis: Analisis, e: _Evento, opciones: "OpcionesGeneracio
                 factor = _REFUERZO_DESTACADO if fuerza >= 0.2 else 1.0
             else:
                 factor = _ATENUACION_RESTO
-        aportes[capa] = opciones.peso(capa) * fuerza * factor
+        aportes[capa] = opciones.peso(capa, e.tiempo) * fuerza * factor
     total = sum(aportes.values())
     maximo = max(aportes.values())
     e.aportes = aportes
@@ -320,7 +342,8 @@ def instrumentos_destacados(analisis: Analisis, eventos: list, opciones: "Opcion
             puntaje = actividad
             presencia = analisis.capas[capa].presencia
             if capa in MELODIA and presencia is not None:
-                puntaje = 0.5 * actividad + 0.5 * opciones.peso(capa) * float(presencia[i:j].mean())
+                medio = t0 + duracion_compas / 2
+                puntaje = 0.5 * actividad + 0.5 * opciones.peso(capa, medio) * float(presencia[i:j].mean())
             puntajes[capa] = puntaje
         mejor = max(puntajes, key=puntajes.get)
         if puntajes[mejor] < 0.05:
@@ -471,14 +494,14 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
         i, j = analisis.frame(a), max(analisis.frame(b), analisis.frame(a) + 1)
         return float(analisis.intensidad[i:j].mean())
 
-    peso_maximo = max(opciones.peso(c) for c in opciones.capas) or 1.0
-
     def suena_lo_elegido(a, b):
-        """¿Suena algún instrumento al que el usuario le dio influencia?"""
+        """¿Suena algún instrumento al que el usuario le dio influencia (en este tramo)?"""
         if not analisis.capas:
             return True
+        medio = (a + b) / 2
+        peso_maximo = max(opciones.peso(c) for c in opciones.capas) or 1.0
         i, j = analisis.frame(a), max(analisis.frame(b), analisis.frame(a) + 1)
-        return any(opciones.peso(c) / peso_maximo * float(capa.presencia[i:j].mean()) >= 0.2
+        return any(opciones.peso(c, medio) / peso_maximo * float(capa.presencia[i:j].mean()) >= 0.2
                    for c, capa in analisis.capas.items() if capa.presencia is not None)
 
     def rellenar(a: _Evento | None, t0: float, t1: float, profundidad: int = 0):
@@ -488,7 +511,7 @@ def rellenar_huecos(analisis: Analisis, seleccion: list, libres: list, perfil: P
         # 1. Hold sobre un sonido sostenido.
         capa_hold = a.capa_sostenida() if a is not None else None
         if (a is not None and opciones.holds > 0 and profundidad == 0
-                and (capa_hold is None or opciones.peso(capa_hold) > 0)):
+                and (capa_hold is None or opciones.peso(capa_hold, a.tiempo) > 0)):
             sostenido = analisis.sostenido(a.tiempo, capa=capa_hold)
             if sostenido >= 0.6 * (t1 - t0) and sostenido >= perfil.hold_min_pulsos * periodo:
                 a.hold_hasta = t1

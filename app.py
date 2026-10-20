@@ -15,6 +15,7 @@ from motor.dificultades import NOMBRES as DIFICULTADES
 from motor.exportador import Metadatos, empaquetar_osz, exportar_osu, nombre_archivo, nombre_version
 from motor.generador import PESOS_CAPA_DEFECTO, OpcionesGeneracion, generar_mapa
 from motor.imagen import EXTENSIONES_IMAGEN, elegir_fondo
+from motor.recorte import ajustar_a_compas, recortar_audio, recortar_mapa, validar_tramo, vista_recortada
 from motor.validador import validar
 from motor.youtube import descargar_audio, es_url_youtube
 
@@ -174,6 +175,8 @@ def _respuesta_trabajo(id_trabajo, datos, analisis, segundos):
         "tiempo_analisis": round(segundos, 2),
         "analisis": analisis.resumen(),
         "audio": f"/api/trabajos/{id_trabajo}/audio",
+        "reproduccion": {"offset_ms": round(analisis.offset * 1000), "duracion": round(analisis.duracion, 3),
+                         "inicio": 0.0},
         "fondo": f"/api/trabajos/{id_trabajo}/fondo?v={int(time.time())}" if datos.get("fondo") else None,
         "metadatos": {"titulo": datos["titulo"], "artista": datos["artista"]},
         "fuente": datos.get("fuente"),
@@ -196,8 +199,11 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
         valor = _numero(f"capa_{capa}")
         if valor is not None:
             capas[capa] = valor
-    if capas and max(capas.get(c, PESOS_CAPA_DEFECTO[c]) for c in PESOS_CAPA_DEFECTO) < 0.02:
+    capas_secciones = _capas_por_seccion()
+    if (capas and max(capas.get(c, PESOS_CAPA_DEFECTO[c]) for c in PESOS_CAPA_DEFECTO) < 0.02
+            and not capas_secciones):
         abort(400, "Al menos un instrumento tiene que tener influencia.")
+    tramo, fundido = _tramo(analisis)
 
     # Datos de la canción editables en cada generación.
     datos["titulo"] = request.form.get("titulo", "").strip() or datos["titulo"]
@@ -213,6 +219,22 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
             datos["fondo"] = fondo.name
     fondo = carpeta / "osz" / datos["fondo"] if datos.get("fondo") else None
 
+    # Audio de los mapas: la canción completa o el tramo recortado (con fundido).
+    if tramo is None:
+        audio_mapas, vista = datos["audio"], analisis
+    else:
+        audio_mapas = "audio_recorte.mp3"
+        clave = [round(tramo[0], 3), round(tramo[1], 3), round(fundido, 2)]
+        if datos.get("recorte") != clave or not (carpeta / "osz" / audio_mapas).exists():
+            try:
+                recortar_audio(carpeta / datos["original"], carpeta / "osz" / audio_mapas,
+                               tramo[0], tramo[1], fundido)
+            except ErrorAudio as error:
+                abort(400, str(error))
+        vista = vista_recortada(analisis, tramo[0], tramo[1])
+    datos["recorte"] = None if tramo is None else [round(tramo[0], 3), round(tramo[1], 3), round(fundido, 2)]
+    datos["audio_mapas"] = audio_mapas
+
     for viejo in carpeta.glob("*.osu"):
         viejo.unlink()
     mapas = []
@@ -221,12 +243,15 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
         for dificultad in dificultades:
             opciones = OpcionesGeneracion(teclas=k, dificultad=dificultad, percusion=percusion,
                                           melodia=melodia, densidad=densidad, holds=holds,
-                                          semilla=semilla, capas=capas)
+                                          semilla=semilla, capas=capas,
+                                          capas_secciones=capas_secciones)
             mapa = generar_mapa(analisis, opciones)
-            informe = validar(mapa, analisis.duracion)
+            if tramo is not None:
+                mapa = recortar_mapa(mapa, tramo[0], tramo[1], analisis.periodo, fundido)
+            informe = validar(mapa, vista.duracion)
             version = nombre_version(mapa)
             nombre = nombre_archivo(meta, version)
-            contenido = exportar_osu(mapa, analisis, meta, audio=datos["audio"],
+            contenido = exportar_osu(mapa, vista, meta, audio=audio_mapas,
                                      fondo=fondo.name if fondo else None)
             archivos[nombre] = contenido
             (carpeta / f"{len(mapas)}.osu").write_text(contenido, encoding="utf-8")
@@ -244,14 +269,59 @@ def _generar_mapas(id_trabajo, carpeta, datos, analisis, usar_imagen=True):
 
     datos["osz"] = nombre_archivo(meta, "set")[:-len(" [set].osu")] + ".osz"
     datos["archivos"] = [m["archivo"] for m in mapas]
-    empaquetar_osz(carpeta / "mapas.osz", carpeta / "osz" / datos["audio"], archivos, fondo=fondo)
+    empaquetar_osz(carpeta / "mapas.osz", carpeta / "osz" / audio_mapas, archivos, fondo=fondo)
     _guardar_trabajo(carpeta, datos)
     version = int(time.time() * 1000)
     return {
         "mapas": mapas,
         "osz": f"/api/trabajos/{id_trabajo}/osz?v={version}",
+        "audio": f"/api/trabajos/{id_trabajo}/audio?v={version}",
         "version": version,
+        # Lo que se escucha en la vista previa (el tramo recortado, si lo hay).
+        "reproduccion": {"offset_ms": round(vista.offset * 1000), "duracion": round(vista.duracion, 3),
+                         "inicio": round(tramo[0], 3) if tramo else 0.0},
+        "recorte": None if tramo is None else {"inicio": round(tramo[0], 3), "fin": round(tramo[1], 3),
+                                               "fundido": fundido},
     }
+
+
+def _capas_por_seccion():
+    """Pesos por tramo enviados como JSON: [{"inicio", "fin", "capas": {...}}]."""
+    crudo = request.form.get("capas_secciones", "").strip()
+    if not crudo:
+        return None
+    try:
+        tramos = json.loads(crudo)
+        limpios = []
+        for tramo in tramos:
+            capas = {str(c): float(v) for c, v in (tramo.get("capas") or {}).items()}
+            if any(c not in PESOS_CAPA_DEFECTO for c in capas):
+                raise ValueError
+            limpios.append({"inicio": float(tramo["inicio"]), "fin": float(tramo["fin"]), "capas": capas})
+        return limpios
+    except (ValueError, TypeError, KeyError, AttributeError):
+        abort(400, "Los ajustes por sección no son válidos.")
+
+
+def _tramo(analisis):
+    """Tramo a recortar (inicio, fin) o None para la canción completa, y el fundido."""
+    inicio = _numero("recorte_inicio")
+    fin = _numero("recorte_fin")
+    fundido = float(min(max(_numero("fundido", 2.0), 0.0), 8.0))
+    if inicio is None and fin is None:
+        return None, fundido
+    inicio = inicio or 0.0
+    fin = analisis.duracion if fin is None else fin
+    if request.form.get("recorte_compas", "1") != "0":
+        inicio = ajustar_a_compas(analisis, inicio) if inicio > 0.05 else 0.0
+        if fin < analisis.duracion - 0.05:
+            fin = ajustar_a_compas(analisis, fin)
+    if inicio <= 0.05 and fin >= analisis.duracion - 0.05:
+        return None, fundido
+    try:
+        return validar_tramo(analisis, inicio, fin), fundido
+    except ValueError as error:
+        abort(400, str(error))
 
 
 @app.post("/api/trabajos")
@@ -308,7 +378,7 @@ def descargar_osz(id_trabajo):
 def audio_trabajo(id_trabajo):
     carpeta = _carpeta_trabajo(id_trabajo)
     datos = _leer_trabajo(carpeta)
-    return send_file(carpeta / "osz" / datos["audio"], conditional=True)
+    return send_file(carpeta / "osz" / (datos.get("audio_mapas") or datos["audio"]), conditional=True)
 
 
 @app.get("/api/trabajos/<id_trabajo>/fondo")

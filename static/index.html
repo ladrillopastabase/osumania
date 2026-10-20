@@ -4,161 +4,195 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Generador osu!mania</title>
-  <link rel="stylesheet" href="/static/estilos.css?v=6">
+  <script>
+    // Tema antes de pintar, para no parpadear: "auto" sigue al sistema.
+    try {
+      const tema = localStorage.getItem("tema");
+      if (tema === "claro" || tema === "oscuro") document.documentElement.dataset.theme = tema === "claro" ? "light" : "dark";
+    } catch (e) { /* sin almacenamiento: se usa el del sistema */ }
+  </script>
+  <link rel="stylesheet" href="/static/estilos.css?v=8">
 </head>
 <body>
-  <header class="cabecera">
-    <h1>Generador de beatmaps <span>osu!mania</span></h1>
-    <p>Sube una canción, ajusta los parámetros y obtén mapas 4K/7K listos para importar en osu!.</p>
+  <header class="barra">
+    <div class="marca">
+      <span class="logo" aria-hidden="true">♪</span>
+      <div>
+        <h1>Generador de beatmaps <span>osu!mania</span></h1>
+        <p>Audio o YouTube → mapas 4K/7K con patrones que siguen a cada instrumento</p>
+      </div>
+    </div>
+    <button id="tema" type="button" class="boton-icono" title="Cambiar tema" aria-label="Cambiar tema">
+      <span id="tema-icono">☀☾</span> <span id="tema-nombre">Auto</span>
+    </button>
   </header>
 
-  <main>
-    <form id="formulario" class="tarjeta">
-      <div id="cancion-cargada" class="cancion-cargada" hidden>
-        <div>
-          <strong id="cancion-nombre"></strong>
-          <small id="cancion-detalle"></small>
-          <small>Cambia los datos o los parámetros y pulsa <em>Regenerar</em>: no se vuelve a descargar ni a analizar la canción.</small>
-        </div>
-        <button type="button" id="otra-cancion">Usar otra canción</button>
-      </div>
+  <main class="app">
+    <!-- ============================== Panel de ajustes ============================== -->
+    <form id="formulario" class="panel">
+      <div class="panel-cuerpo">
+        <section class="bloque">
+          <h2><span class="paso">1</span> Canción</h2>
 
-      <div id="fuente">
-      <label id="zona-audio" class="zona-audio">
-        <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
-        <strong id="nombre-audio">Arrastra o elige un audio</strong>
-        <small>MP3 · WAV · FLAC · OGG (máx. 80 MB)</small>
-      </label>
-
-      <label class="enlace">… o pega un enlace de YouTube
-        <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
-      </label>
-      </div>
-
-      <div class="rejilla">
-        <label>Título <input name="titulo" id="titulo" placeholder="Se toma del archivo o del video"></label>
-        <label>Artista <input name="artista" id="artista" placeholder="Desconocido"></label>
-        <label>Creador <input name="creador" placeholder="Generador osu!mania"></label>
-      </div>
-
-      <fieldset>
-        <legend>Modos</legend>
-        <label class="ficha"><input type="checkbox" name="teclas" value="4" checked> 4K</label>
-        <label class="ficha"><input type="checkbox" name="teclas" value="7"> 7K</label>
-      </fieldset>
-
-      <fieldset>
-        <legend>Dificultades</legend>
-        <label class="ficha"><input type="checkbox" name="dificultades" value="Easy" checked> Easy</label>
-        <label class="ficha"><input type="checkbox" name="dificultades" value="Normal" checked> Normal</label>
-        <label class="ficha"><input type="checkbox" name="dificultades" value="Hard" checked> Hard</label>
-        <label class="ficha"><input type="checkbox" name="dificultades" value="Insane" checked> Insane</label>
-      </fieldset>
-
-      <fieldset class="mezcla">
-        <legend>¿Qué siguen las notas? Influencia de cada instrumento</legend>
-        <div class="preajustes">
-          <button type="button" class="ficha" data-mezcla="100,90,50,60,100">Equilibrado</button>
-          <button type="button" class="ficha" data-mezcla="100,100,80,20,20">Batería</button>
-          <button type="button" class="ficha" data-mezcla="30,25,10,40,100">Melodía / voz</button>
-          <button type="button" class="ficha" data-mezcla="50,40,10,100,40">Bajo</button>
-          <button type="button" class="ficha" data-mezcla="100,100,100,100,100">Todo</button>
-        </div>
-        <div class="capas-controles">
-          <div class="familia">
-            <h4>Percusión</h4>
-            <label><span><i class="punto" style="background:var(--c-bombo)"></i>Bombo</span> <output id="v-capa_bombo"></output>
-              <input type="range" name="capa_bombo" min="0" max="100" step="5" value="100"></label>
-            <label><span><i class="punto" style="background:var(--c-caja)"></i>Caja</span> <output id="v-capa_caja"></output>
-              <input type="range" name="capa_caja" min="0" max="100" step="5" value="90"></label>
-            <label><span><i class="punto" style="background:var(--c-platillos)"></i>Platillos</span> <output id="v-capa_platillos"></output>
-              <input type="range" name="capa_platillos" min="0" max="100" step="5" value="50"></label>
+          <div id="cancion-cargada" class="cancion-cargada" hidden>
+            <div>
+              <strong id="cancion-nombre"></strong>
+              <small id="cancion-detalle"></small>
+            </div>
+            <button type="button" id="otra-cancion" class="boton-secundario">Cambiar</button>
           </div>
-          <div class="familia">
-            <h4>Melodía</h4>
-            <label><span><i class="punto" style="background:var(--c-bajo)"></i>Bajo</span> <output id="v-capa_bajo"></output>
-              <input type="range" name="capa_bajo" min="0" max="100" step="5" value="60"></label>
-            <label><span><i class="punto" style="background:var(--c-melodia)"></i>Melodía / voz</span> <output id="v-capa_melodia"></output>
-              <input type="range" name="capa_melodia" min="0" max="100" step="5" value="100"></label>
-          </div>
-        </div>
-        <p class="ayuda">Cada control decide cuánto aporta ese instrumento. En cada compás se elige el instrumento destacado (el que más suena y más pesa aquí): las notas cortas siguen sus golpes, el contorno sigue su altura (la voz o la línea de bajo) y los holds duran lo que dura su nota. Con un control en 0 %, ese instrumento no genera notas.</p>
-      </fieldset>
 
-      <div class="rejilla">
-        <label>Densidad <output id="v-densidad">1.0×</output>
-          <input type="range" name="densidad" min="0.5" max="1.8" step="0.1" value="1.0">
-        </label>
-        <label>Holds (sobre 1×: estilo LN) <output id="v-holds">1.0×</output>
-          <input type="range" name="holds" min="0" max="2.5" step="0.1" value="1.0">
-        </label>
+          <div id="fuente" class="fuente">
+            <label id="zona-audio" class="zona-audio">
+              <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
+              <strong id="nombre-audio">Arrastra o elige un audio</strong>
+              <small>MP3 · WAV · FLAC · OGG (máx. 80 MB)</small>
+            </label>
+            <label class="campo">o un enlace de YouTube
+              <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
+            </label>
+          </div>
+
+          <div class="dos">
+            <label class="campo">Título <input name="titulo" id="titulo" placeholder="Del archivo o video"></label>
+            <label class="campo">Artista <input name="artista" id="artista" placeholder="Desconocido"></label>
+          </div>
+          <label class="campo">Creador <input name="creador" placeholder="Generador osu!mania"></label>
+          <label class="campo"><span>Imagen de fondo <small>(opcional)</small></span>
+            <input id="imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,.webp,image/*">
+          </label>
+          <p class="ayuda">Sin imagen se usa la miniatura de YouTube o la portada del audio.</p>
+        </section>
+
+        <section class="bloque">
+          <h2><span class="paso">2</span> Mapas</h2>
+          <div class="fichas" role="group" aria-label="Modos">
+            <label class="ficha"><input type="checkbox" name="teclas" value="4" checked> 4K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="7"> 7K</label>
+          </div>
+          <div class="fichas" role="group" aria-label="Dificultades">
+            <label class="ficha"><input type="checkbox" name="dificultades" value="Easy" checked> Easy</label>
+            <label class="ficha"><input type="checkbox" name="dificultades" value="Normal" checked> Normal</label>
+            <label class="ficha"><input type="checkbox" name="dificultades" value="Hard" checked> Hard</label>
+            <label class="ficha"><input type="checkbox" name="dificultades" value="Insane" checked> Insane</label>
+          </div>
+          <label class="deslizador"><span>Densidad</span>
+            <input type="range" name="densidad" min="0.5" max="1.8" step="0.1" value="1.0">
+            <output id="v-densidad">1.0×</output></label>
+          <label class="deslizador"><span>Holds <small>(&gt;1× estilo LN)</small></span>
+            <input type="range" name="holds" min="0" max="2.5" step="0.1" value="1.0">
+            <output id="v-holds">1.0×</output></label>
+        </section>
+
+        <section class="bloque">
+          <h2><span class="paso">3</span> Instrumentos <small>toda la canción</small></h2>
+          <div class="fichas preajustes" id="preajustes-globales"></div>
+          <div id="controles-globales" class="controles-capas"></div>
+          <p class="ayuda">Cuánto aporta cada instrumento. Las notas siguen al instrumento destacado de cada compás; puedes cambiarlo por sección a la derecha.</p>
+        </section>
+
+        <details class="bloque">
+          <summary><h2>Avanzado</h2></summary>
+          <div class="dos">
+            <label class="campo">BPM manual <input name="bpm" type="number" step="0.01" min="30" max="400" placeholder="Automático"></label>
+            <label class="campo">Offset (ms) <input name="offset_ms" type="number" step="1" placeholder="Automático"></label>
+          </div>
+          <label class="campo">Semilla <input name="semilla" type="number" step="1" value="0"></label>
+          <p class="ayuda">Si el BPM sale a la mitad o al doble, escríbelo. La semilla cambia los patrones manteniendo el ritmo.</p>
+        </details>
       </div>
 
-      <label class="ficha-imagen">Imagen de fondo (opcional)
-        <input id="imagen" name="imagen" type="file" accept=".jpg,.jpeg,.png,.webp,image/*">
-        <small>Si no subes una, se usa la miniatura del video de YouTube o la portada del audio. Puedes cambiarla al regenerar.</small>
-      </label>
-
-      <details>
-        <summary>Ajustes avanzados</summary>
-        <div class="rejilla">
-          <label>BPM manual <input name="bpm" type="number" step="0.01" min="30" max="400" placeholder="Automático"></label>
-          <label>Offset manual (ms) <input name="offset_ms" type="number" step="1" placeholder="Automático"></label>
-          <label>Semilla <input name="semilla" type="number" step="1" value="0"></label>
-        </div>
-        <p class="ayuda">Si el BPM detectado es la mitad o el doble del real, escríbelo aquí. La semilla cambia los patrones manteniendo el ritmo.</p>
-      </details>
-
-      <button id="boton-generar" type="submit">Generar beatmaps</button>
-      <p id="estado" class="estado" role="status"></p>
+      <div class="panel-pie">
+        <button id="boton-generar" type="submit" class="boton-principal">Generar beatmaps</button>
+        <p id="estado" class="estado" role="status"></p>
+      </div>
     </form>
 
-    <section id="resultados" hidden>
-      <div class="tarjeta">
-        <div class="cabecera-analisis">
-          <img id="miniatura" alt="Fondo del beatmap" hidden>
-          <div>
-            <h2>Análisis musical</h2>
-            <dl id="datos-analisis" class="datos"></dl>
-          </div>
-        </div>
-        <canvas id="linea-tiempo" height="90"></canvas>
-        <div id="leyenda-secciones" class="leyenda"></div>
-        <h3 class="subtitulo">Capas por instrumento <small>(arriba: el instrumento destacado que siguen las notas)</small></h3>
-        <canvas id="capas" height="130"></canvas>
+    <!-- ============================== Resultados ============================== -->
+    <section class="contenido">
+      <div id="vacio" class="vacio">
+        <h2>Empieza por una canción</h2>
+        <ol>
+          <li>Sube un audio o pega un enlace de YouTube.</li>
+          <li>Elige modos, dificultades y cuánto sigue cada instrumento.</li>
+          <li>Genera, recorta, ajusta por sección y regenera sin volver a descargar.</li>
+        </ol>
       </div>
 
-      <div class="tarjeta">
-        <div class="titulo-fila">
-          <h2>Mapas generados</h2>
-          <a id="descargar-osz" class="boton" href="#">Descargar .osz (todas)</a>
-        </div>
-        <div id="lista-mapas" class="lista-mapas"></div>
-      </div>
-
-      <div class="tarjeta">
-        <div class="titulo-fila">
-          <h2>Previsualización</h2>
-          <select id="mapa-vista"></select>
-        </div>
-        <div class="vista">
-          <canvas id="campo" width="420" height="560"></canvas>
-          <div class="controles">
-            <button id="reproducir" type="button">▶ Reproducir</button>
-            <input id="posicion" type="range" min="0" max="1000" value="0">
-            <span id="reloj">0:00 / 0:00</span>
-            <label>Velocidad
-              <input id="velocidad" type="range" min="10" max="40" value="22">
-            </label>
-            <p class="ayuda">Espacio: reproducir/pausar. Clic en la barra de densidad para saltar.</p>
-            <canvas id="densidad-mapa" height="60"></canvas>
+      <div id="resultados" class="resultados" hidden>
+        <article class="tarjeta">
+          <div class="cabecera-cancion">
+            <img id="miniatura" alt="Fondo del beatmap" hidden>
+            <div class="info-cancion">
+              <h2 id="titulo-resultado"></h2>
+              <dl id="datos-analisis" class="datos"></dl>
+            </div>
           </div>
-        </div>
-        <audio id="reproductor" preload="auto"></audio>
+
+          <canvas id="linea-tiempo" height="110" aria-label="Línea de tiempo con secciones y recorte"></canvas>
+          <div id="leyenda-secciones" class="leyenda"></div>
+
+          <div class="recorte">
+            <h3>Recorte</h3>
+            <div class="recorte-controles">
+              <label class="campo-corto">Inicio <input id="recorte-inicio" type="text" inputmode="decimal" value="0:00.0"></label>
+              <label class="campo-corto">Fin <input id="recorte-fin" type="text" inputmode="decimal" value="0:00.0"></label>
+              <label class="campo-corto">Fundido final
+                <select id="fundido">
+                  <option value="0">Sin fundido</option>
+                  <option value="1">1 s</option>
+                  <option value="2" selected>2 s</option>
+                  <option value="4">4 s</option>
+                </select>
+              </label>
+              <label class="ficha"><input id="recorte-compas" type="checkbox" checked> Ajustar a compás</label>
+              <button type="button" id="recorte-completa" class="boton-secundario">Canción completa</button>
+            </div>
+            <p class="ayuda">Arrastra los bordes en la línea de tiempo. El recorte se aplica al regenerar: el .osz lleva solo ese tramo.</p>
+          </div>
+        </article>
+
+        <article class="tarjeta">
+          <div class="titulo-fila">
+            <h2>Instrumentos por sección</h2>
+            <small class="pista">Se aplica al regenerar</small>
+          </div>
+          <div id="secciones" class="secciones"></div>
+          <h3 class="subtitulo">Capas detectadas <small>· arriba, el instrumento destacado que siguen las notas</small></h3>
+          <canvas id="capas" height="170"></canvas>
+        </article>
+
+        <article class="tarjeta">
+          <div class="titulo-fila">
+            <h2>Mapas generados</h2>
+            <a id="descargar-osz" class="boton-principal boton-chico" href="#">Descargar .osz</a>
+          </div>
+          <div id="lista-mapas" class="lista-mapas"></div>
+        </article>
+
+        <article class="tarjeta">
+          <div class="titulo-fila">
+            <h2>Previsualización</h2>
+            <select id="mapa-vista" aria-label="Mapa a previsualizar"></select>
+          </div>
+          <div class="vista">
+            <canvas id="campo" width="420" height="560"></canvas>
+            <div class="controles">
+              <button id="reproducir" type="button" class="boton-principal">▶ Reproducir</button>
+              <input id="posicion" type="range" min="0" max="1000" value="0" aria-label="Posición">
+              <span id="reloj">0:00 / 0:00</span>
+              <label class="deslizador"><span>Velocidad</span>
+                <input id="velocidad" type="range" min="10" max="40" value="22"><output></output></label>
+              <canvas id="densidad-mapa" height="60"></canvas>
+              <p class="ayuda">Espacio: reproducir/pausar. Clic en la barra de densidad para saltar.</p>
+            </div>
+          </div>
+          <audio id="reproductor" preload="auto"></audio>
+        </article>
       </div>
     </section>
   </main>
 
-  <script src="/static/app.js?v=7"></script>
+  <script src="/static/app.js?v=9"></script>
 </body>
 </html>

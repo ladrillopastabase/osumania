@@ -186,6 +186,23 @@ patrones manteniendo el ritmo.
 - **Avanzado**: BPM y offset manuales (útil si el BPM detectado sale a la mitad o al doble)
   y semilla.
 
+**Recorte**: en la línea de tiempo se arrastran el inicio y el fin (o se escriben, en
+`m:ss.s`); por defecto se ajustan al inicio de compás más cercano. El mapa se genera sobre la
+canción completa (BPM y secciones más estables) y luego se recorta (`motor/recorte.py`): el
+audio se corta con precisión de muestra (`atrim` de ffmpeg) con un fundido final opcional, las
+notas se desplazan, los holds que pasan el final se acortan, durante el fundido no quedan
+notas y el punto de tiempo y el kiai se corren al tramo. El `.osz` lleva solo el audio
+recortado. Mínimo 10 s.
+
+**Instrumentos por sección**: cada sección detectada puede usar los pesos globales, un
+preajuste (*Batería*, *Melodía / voz*, *Bajo*, *Todo*), *Sin notas* o pesos personalizados.
+Por API: `capas_secciones` = `[{"inicio": s, "fin": s, "capas": {"bombo": 0..1, …}}]`; fuera
+de esos tramos rigen los globales.
+
+**Interfaz**: panel de ajustes fijo a la izquierda (con el botón siempre visible) y resultados
+a la derecha; en pantallas angostas se apilan. Tema claro, oscuro o automático (sigue al
+sistema), con el botón de la barra superior.
+
 **Regenerar sin volver a descargar**: la primera vez la canción se sube o descarga y se
 analiza (`POST /api/trabajos`). Después, el formulario muestra la canción cargada y cada
 *Regenerar* (`POST /api/trabajos/<id>/generar`) usa el análisis guardado: se pueden cambiar
