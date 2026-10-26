@@ -1,4 +1,9 @@
-"use strict";
+// Interfaz: todo ocurre en el navegador. El análisis y la generación corren en
+// un trabajador (js/trabajador.js); el audio se decodifica y se codifica a MP3 aquí.
+
+import { canalesTramo, codificarMp3, decodificar, FRECUENCIA_ANALISIS, imagenAJpeg, leerEtiquetas, senalAnalisis }
+  from "./audio.js";
+import { crearZip } from "./zip.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -34,7 +39,13 @@ const COLORES_COLUMNA = {
 
 const estado = {
   archivo: null,
-  trabajo: null,       // canción ya subida/descargada y analizada en el servidor
+  cancion: null,       // {bytes, buffer, senal, extension, nombre} de la canción analizada
+  claveAnalisis: null, // BPM y offset forzados con los que se analizó
+  fondoJpg: null,      // imagen de fondo ya convertida a JPG (Blob)
+  fondoUrl: null,
+  audioSalida: null,   // {clave, nombre, bytes, url}: el audio del .osz y de la vista previa
+  descargas: [],       // URLs de la última generación (se liberan al regenerar)
+  trabajo: null,       // canción ya cargada y analizada
   fuenteNueva: false,  // el usuario eligió otra canción desde la última carga
   resultado: null,     // última generación
   mapa: null,
@@ -94,6 +105,16 @@ function mostrarEstado(texto, esError = false) {
   nodo.textContent = texto;
   nodo.classList.toggle("error", esError);
 }
+
+/** Barra de progreso de la barra de acción (null la oculta). */
+function mostrarProgreso(fraccion) {
+  const barra = $("progreso");
+  barra.hidden = fraccion === null;
+  if (fraccion !== null) barra.value = Math.min(1, Math.max(0, fraccion));
+}
+
+// Espera a que el navegador pinte el estado antes de un trabajo pesado en este hilo.
+const pintar = () => new Promise((resolver) => requestAnimationFrame(() => setTimeout(resolver, 0)));
 
 // ---------------------------------------------------------------- tema
 
@@ -188,7 +209,6 @@ function elegirArchivo(archivo) {
   if (!archivo) return;
   estado.archivo = archivo;
   estado.fuenteNueva = true;
-  $("url").value = "";
   $("nombre-audio").textContent = archivo.name;
   // "Artista - Título.mp3" rellena los metadatos si están vacíos.
   const base = archivo.name.replace(/\.[^.]+$/, "");
@@ -202,15 +222,6 @@ function elegirArchivo(archivo) {
 }
 
 entradaAudio.addEventListener("change", () => elegirArchivo(entradaAudio.files[0]));
-$("url").addEventListener("input", () => {
-  if (!$("url").value.trim()) return;
-  estado.fuenteNueva = true;
-  if (estado.archivo) {
-    estado.archivo = null;
-    entradaAudio.value = "";
-    $("nombre-audio").textContent = "Arrastra o elige un audio";
-  }
-});
 ["dragenter", "dragover"].forEach((ev) => zona.addEventListener(ev, (e) => {
   e.preventDefault();
   zona.classList.add("arrastrando");
@@ -236,8 +247,11 @@ $("otra-cancion").addEventListener("click", () => {
   estado.secciones = [];
   estado.mapa = null;
   estado.sucio = false;
+  estado.cancion = null;
+  estado.audioSalida = null;
+  fijarFondo(null);
   entradaAudio.value = "";
-  $("url").value = "";
+  $("imagen").value = "";
   $("titulo").value = "";
   $("artista").value = "";
   $("nombre-audio").textContent = "Arrastra o elige un audio";
@@ -276,16 +290,7 @@ function usarTrabajo(json) {
     .map(([k, v]) => `<span><i style="background:var(${v})"></i>${NOMBRE_ETIQUETA[k]}</span>`).join("")
     + `<span><i style="background:var(--texto)"></i>Intensidad</span>`;
 
-  const miniatura = $("miniatura");
-  if (json.fondo && miniatura.dataset.fuente !== json.fondo) {
-    miniatura.dataset.fuente = json.fondo;
-    miniatura.src = json.fondo;
-    const imagenFondo = new Image();
-    imagenFondo.onload = () => { estado.fondo = imagenFondo; dibujarCampo(); };
-    imagenFondo.src = json.fondo;
-  }
-  miniatura.hidden = !json.fondo;
-  if (!json.fondo) estado.fondo = null;
+  mostrarFondo(json.fondo);
 
   actualizarCamposRecorte();
   dibujarLineaTiempo();
@@ -326,21 +331,109 @@ function marcarCambios() {
 
 // Cualquier cambio de ajustes después de generar queda "sin aplicar" hasta regenerar.
 formulario.addEventListener("input", (e) => {
-  if (["audio", "url"].includes(e.target.id)) { actualizarAccion(); return; }
+  if (e.target.id === "audio") { actualizarAccion(); return; }
   marcarCambios();
 });
 formulario.addEventListener("change", (e) => {
-  if (["audio", "url"].includes(e.target.id)) { actualizarAccion(); return; }
+  if (e.target.id === "audio") { actualizarAccion(); return; }
+  marcarCambios();
+});
+
+// ---------------------------------------------------------------- fondo
+
+function fijarFondo(jpg) {
+  if (estado.fondoUrl) URL.revokeObjectURL(estado.fondoUrl);
+  estado.fondoJpg = jpg;
+  estado.fondoUrl = jpg ? URL.createObjectURL(jpg) : null;
+  if (estado.trabajo) {
+    estado.trabajo.fondo = estado.fondoUrl;
+    mostrarFondo(estado.fondoUrl);
+  }
+}
+
+function mostrarFondo(url) {
+  const miniatura = $("miniatura");
+  miniatura.hidden = !url;
+  if (!url) {
+    estado.fondo = null;
+    delete miniatura.dataset.fuente;
+    dibujarCampo();
+    return;
+  }
+  if (miniatura.dataset.fuente === url) return;
+  miniatura.dataset.fuente = url;
+  miniatura.src = url;
+  const imagenFondo = new Image();
+  imagenFondo.onload = () => { estado.fondo = imagenFondo; dibujarCampo(); };
+  imagenFondo.src = url;
+}
+
+$("imagen").addEventListener("change", async () => {
+  const archivo = $("imagen").files[0];
+  if (!archivo) return;
+  const jpg = await imagenAJpeg(archivo);
+  if (!jpg) {
+    mostrarEstado("No se pudo leer la imagen. Usa JPG, PNG o WEBP.", true);
+    return;
+  }
+  fijarFondo(jpg);
   marcarCambios();
 });
 
 // ---------------------------------------------------------------- envío
 
-async function pedir(url, datos) {
-  const respuesta = await fetch(url, { method: "POST", body: datos });
-  const json = await respuesta.json().catch(() => ({ error: "Respuesta inválida del servidor." }));
-  if (!respuesta.ok) throw new Error(json.error || "Error en el servidor.");
-  return json;
+// El motor corre en un trabajador; cada pedido espera su respuesta por id.
+const motor = new Worker(new URL("./trabajador.js", import.meta.url), { type: "module" });
+const pendientes = new Map();
+let siguienteId = 0;
+
+motor.onmessage = (e) => {
+  const pedido = pendientes.get(e.data.id);
+  if (!pedido) return;
+  if (e.data.tipo === "progreso") {
+    pedido.alAvanzar?.(e.data.fraccion, e.data.etapa);
+    return;
+  }
+  pendientes.delete(e.data.id);
+  if (e.data.tipo === "listo") pedido.resolver(e.data.resultado);
+  else pedido.rechazar(new Error(e.data.mensaje));
+};
+motor.onerror = (e) => {
+  for (const pedido of pendientes.values()) pedido.rechazar(new Error(`Falló el motor: ${e.message || "error desconocido"}`));
+  pendientes.clear();
+};
+
+function pedir(tipo, datos, alAvanzar = null) {
+  return new Promise((resolver, rechazar) => {
+    const id = ++siguienteId;
+    pendientes.set(id, { resolver, rechazar, alAvanzar });
+    motor.postMessage({ id, tipo, ...datos });
+  });
+}
+
+function numeroCampo(nombre) {
+  const valor = formulario.elements[nombre].value.trim().replace(",", ".");
+  if (!valor) return null;
+  const numero = Number(valor);
+  if (!Number.isFinite(numero)) throw new Error(`Valor inválido para ${nombre}.`);
+  return numero;
+}
+
+function bpmYOffset() {
+  const bpm = numeroCampo("bpm");
+  if (bpm !== null && !(bpm >= 30 && bpm <= 400)) throw new Error("El BPM debe estar entre 30 y 400.");
+  return { bpm, offsetMs: numeroCampo("offset_ms") };
+}
+
+/** Analiza (o vuelve a analizar con otro BPM/offset) la señal ya decodificada. */
+async function pedirAnalisis(forzado) {
+  const resultado = await pedir("analizar", { senal: estado.cancion.senal, sr: FRECUENCIA_ANALISIS, ...forzado },
+    (fraccion, etapa) => {
+      mostrarProgreso(fraccion);
+      mostrarEstado(`Analizando: ${etapa.toLowerCase()}…`);
+    });
+  estado.claveAnalisis = JSON.stringify(forzado);
+  return resultado;
 }
 
 function valoresMarcados(nombre) {
@@ -364,25 +457,71 @@ function ajustesPorSeccion() {
 }
 
 async function analizar() {
-  const url = $("url").value.trim();
-  if (!estado.archivo && !url) {
-    mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
+  if (!estado.archivo) {
+    mostrarEstado("Elige un archivo de audio.", true);
     return;
   }
-  const carga = new FormData();
-  if (estado.archivo) carga.append("audio", estado.archivo);
-  else carga.append("url", url);
-  for (const campo of ["bpm", "offset_ms"]) carga.append(campo, formulario.elements[campo].value);
-  mostrarEstado(estado.archivo ? "Analizando la canción…" : "Descargando el audio de YouTube y analizando…");
-  const trabajo = await pedir("/api/trabajos", carga);
-  $("titulo").value = $("titulo").value || trabajo.metadatos.titulo;
-  $("artista").value = ($("artista").value && $("artista").value !== "Desconocido") ? $("artista").value : trabajo.metadatos.artista;
+  const forzado = bpmYOffset();
+  const archivo = estado.archivo;
+  mostrarEstado("Leyendo el audio…");
+  mostrarProgreso(0);
+  await pintar();
+  const bytes = await archivo.arrayBuffer();
+  const buffer = await decodificar(bytes);
+  mostrarEstado("Preparando la señal…");
+  await pintar();
+  const senal = await senalAnalisis(buffer);
+  const extension = (archivo.name.match(/\.([^.]+)$/) || [, ""])[1].toLowerCase();
+  estado.cancion = { bytes: new Uint8Array(bytes), buffer, senal, extension, nombre: archivo.name };
+  estado.audioSalida = null;
+
+  // Título, artista y carátula incrustados (MP3/FLAC) completan lo que falte.
+  const etiquetas = leerEtiquetas(bytes);
+  const base = archivo.name.replace(/\.[^.]+$/, "");
+  if (etiquetas.titulo && (!$("titulo").value || $("titulo").value === base
+      || base.endsWith($("titulo").value))) $("titulo").value = etiquetas.titulo;
+  if (etiquetas.artista && (!$("artista").value || $("artista").value === "Desconocido"
+      || base.startsWith($("artista").value))) $("artista").value = etiquetas.artista;
+  if (!$("artista").value) $("artista").value = "Desconocido";
+  if (!$("imagen").files[0]) {
+    const portada = etiquetas.portada ? await imagenAJpeg(new Blob([etiquetas.portada.datos], { type: etiquetas.portada.tipo })) : null;
+    fijarFondo(portada);
+  }
+
+  const resultado = await pedirAnalisis(forzado);
   estado.resultado = null;
   estado.sucio = false;
+  estado.trabajo = null;
   $("paso-resultados").hidden = true;
-  usarTrabajo(trabajo);
-  mostrarEstado("Canción analizada. Revisa el recorte, los instrumentos y los mapas, y genera.");
+  usarTrabajo({ id: siguienteId, ...resultado, fondo: estado.fondoUrl,
+    metadatos: { titulo: $("titulo").value, artista: $("artista").value } });
+  mostrarProgreso(null);
+  mostrarEstado(`Canción analizada en ${resultado.tiempo_analisis} s. Revisa el recorte, los instrumentos y los mapas, y genera.`);
   $("paso-estructura").scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+/** El audio del .osz: el original si osu! lo reproduce tal cual; si no, MP3 (recortado o completo). */
+async function prepararAudio(recorte, fundido) {
+  const c = estado.cancion;
+  const original = !recorte && ["mp3", "ogg"].includes(c.extension);
+  const clave = original ? "original" : JSON.stringify(recorte ? [recorte.inicio, recorte.fin, fundido] : "completo");
+  if (estado.audioSalida && estado.audioSalida.clave === clave) return estado.audioSalida;
+  let bytes, nombre, tipo;
+  if (original) {
+    bytes = c.bytes;
+    nombre = `audio.${c.extension}`;
+    tipo = c.extension === "ogg" ? "audio/ogg" : "audio/mpeg";
+  } else {
+    mostrarEstado("Codificando el audio a MP3…");
+    mostrarProgreso(0);
+    const canales = recorte ? canalesTramo(c.buffer, recorte.inicio, recorte.fin, fundido) : canalesTramo(c.buffer);
+    bytes = await codificarMp3(canales, c.buffer.sampleRate, (f) => mostrarProgreso(f));
+    nombre = "audio.mp3";
+    tipo = "audio/mpeg";
+  }
+  if (estado.audioSalida) URL.revokeObjectURL(estado.audioSalida.url);
+  estado.audioSalida = { clave, nombre, bytes, url: URL.createObjectURL(new Blob([bytes], { type: tipo })) };
+  return estado.audioSalida;
 }
 
 async function generar() {
@@ -397,31 +536,65 @@ async function generar() {
     mostrarEstado("Elige al menos un modo y una dificultad (paso 4).", true);
     return;
   }
-  const datos = new FormData();
-  datos.append("teclas", teclas);
-  datos.append("dificultades", dificultades);
-  for (const campo of ["titulo", "artista", "creador", "densidad", "holds", "bpm", "offset_ms", "semilla"]) {
-    datos.append(campo, formulario.elements[campo].value);
+  // Un BPM u offset manual nuevo obliga a rehacer el análisis.
+  const forzado = bpmYOffset();
+  if (JSON.stringify(forzado) !== estado.claveAnalisis) {
+    mostrarProgreso(0);
+    const resultado = await pedirAnalisis(forzado);
+    usarTrabajo({ ...estado.trabajo, ...resultado });
   }
-  CAPAS.forEach((capa, i) => datos.append(`capa_${capa}`, valoresGlobales()[i] / 100));
-  if (porSeccion.length) datos.append("capas_secciones", JSON.stringify(porSeccion));
+  const titulo = $("titulo").value.trim() || estado.trabajo.metadatos.titulo || "Sin título";
+  const artista = $("artista").value.trim() || estado.trabajo.metadatos.artista || "Desconocido";
   const recorte = recorteVigente();
-  if (recorte) {
-    datos.append("recorte_inicio", recorte.inicio.toFixed(3));
-    datos.append("recorte_fin", recorte.fin.toFixed(3));
-    datos.append("recorte_compas", $("recorte-compas").checked ? "1" : "0");
-  }
-  datos.append("fundido", $("fundido").value);
-  const imagen = $("imagen").files[0];
-  if (imagen) datos.append("imagen", imagen);
+  const fundido = Number($("fundido").value);
+  // El nombre del audio depende de si se recorta; se decide antes de exportar.
+  const original = !recorte && ["mp3", "ogg"].includes(estado.cancion.extension);
+  const parametros = {
+    teclas: teclas.split(",").map(Number),
+    dificultades: dificultades.split(","),
+    percusion: 0.5,
+    melodia: 0.5,
+    densidad: Number(formulario.elements.densidad.value),
+    holds: Number(formulario.elements.holds.value),
+    semilla: numeroCampo("semilla") ?? 0,
+    capas: Object.fromEntries(CAPAS.map((capa, i) => [capa, valoresGlobales()[i] / 100])),
+    capasSecciones: porSeccion,
+    recorte: recorte ? { inicio: recorte.inicio, fin: recorte.fin, ajustarCompas: $("recorte-compas").checked } : null,
+    fundido,
+    meta: { titulo, artista, creador: formulario.elements.creador.value.trim() || "Generador osu!mania",
+      fuente: "", etiquetas: "generado automatico" },
+    audio: original ? `audio.${estado.cancion.extension}` : "audio.mp3",
+    fondo: estado.fondoJpg ? "fondo.jpg" : null,
+  };
   mostrarEstado("Generando mapas…");
+  mostrarProgreso(0);
   const primeraVez = !estado.resultado;
-  const json = await pedir(`/api/trabajos/${estado.trabajo.id}/generar`, datos);
-  $("imagen").value = "";
+  const json = await pedir("generar", { parametros }, (fraccion, etapa) => {
+    mostrarProgreso(fraccion);
+    mostrarEstado(`${etapa}…`);
+  });
   if (json.recorte) estado.recorte = { inicio: json.recorte.inicio, fin: json.recorte.fin };
+  const audio = await prepararAudio(json.recorte, fundido);
+
+  mostrarEstado("Empaquetando el .osz…");
+  await pintar();
+  for (const url of estado.descargas) URL.revokeObjectURL(url);
+  estado.descargas = [];
+  const archivos = [{ nombre: audio.nombre, datos: audio.bytes }];
+  if (estado.fondoJpg) archivos.push({ nombre: "fondo.jpg", datos: new Uint8Array(await estado.fondoJpg.arrayBuffer()) });
+  json.archivos.forEach((a, i) => {
+    archivos.push(a);
+    json.mapas[i].url = URL.createObjectURL(new Blob([a.datos], { type: "text/plain" }));
+    estado.descargas.push(json.mapas[i].url);
+  });
+  const osz = URL.createObjectURL(crearZip(archivos));
+  estado.descargas.push(osz);
+
   estado.sucio = false;
-  usarTrabajo(json);
-  mostrarResultados(json);
+  usarTrabajo({ ...estado.trabajo, analisis: json.analisis, metadatos: { titulo, artista } });
+  mostrarResultados({ ...json, id: estado.trabajo.id, osz, oszNombre: json.osz, audio: audio.url,
+    metadatos: { titulo, artista } });
+  mostrarProgreso(null);
   const extra = json.recorte ? ` · tramo ${formatoTiempo(json.recorte.inicio, true)}–${formatoTiempo(json.recorte.fin, true)}` : "";
   mostrarEstado(`Listo: ${json.mapas.length} mapas${extra}.`);
   if (primeraVez) $("paso-resultados").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -435,6 +608,7 @@ formulario.addEventListener("submit", async (e) => {
     if (!estado.trabajo || estado.fuenteNueva) await analizar();
     else await generar();
   } catch (error) {
+    mostrarProgreso(null);
     mostrarEstado(error.message, true);
   } finally {
     boton.disabled = false;
@@ -452,6 +626,7 @@ function mostrarResultados(json) {
   dibujarCapas();
 
   $("descargar-osz").href = json.osz;
+  $("descargar-osz").download = json.oszNombre;
   const lista = $("lista-mapas");
   lista.innerHTML = "";
   const selector = $("mapa-vista");
@@ -474,7 +649,7 @@ function mostrarResultados(json) {
       <span class="${v.valido ? "valido" : "invalido"}">${v.valido ? "✔ Válido" : "✖ Con errores"}</span>
       <div class="acciones">
         <button type="button" class="boton-secundario" data-ver="${mapa.indice}">Ver</button>
-        <a class="boton-secundario" href="/api/trabajos/${json.id}/osu/${mapa.indice}">.osu</a>
+        <a class="boton-secundario" href="${mapa.url}" download="${mapa.archivo.replace(/&/g, "&amp;")}">.osu</a>
       </div>`;
     lista.appendChild(tarjeta);
     const opcion = document.createElement("option");
@@ -492,13 +667,10 @@ function mostrarResultados(json) {
   const versionAnterior = estado.mapa ? estado.mapa.version : null;
   const posicion = reproductor.currentTime;
   if (reproductor.dataset.fuente !== json.audio) {
-    const anterior = reproductor.dataset.fuente;
-    const mismaCancion = anterior && anterior.split("?")[0] === json.audio.split("?")[0];
     reproductor.src = json.audio;
     reproductor.dataset.fuente = json.audio;
-    if (mismaCancion && !json.recorte) {
-      reproductor.addEventListener("loadedmetadata", () => { reproductor.currentTime = posicion; }, { once: true });
-    }
+  } else if (!json.recorte) {
+    reproductor.currentTime = posicion;
   }
   const mismo = json.mapas.find((m) => m.version === versionAnterior) || json.mapas[0];
   selector.value = mismo.indice;

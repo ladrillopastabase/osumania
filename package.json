@@ -1,0 +1,10 @@
+{
+  "name": "generador-osumania",
+  "private": true,
+  "description": "Generador automático de beatmaps de osu!mania que corre en el navegador.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\"",
+    "servir": "python3 -m http.server 8000"
+  }
+}

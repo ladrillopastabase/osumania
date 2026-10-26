@@ -11,7 +11,7 @@
       if (tema === "claro" || tema === "oscuro") document.documentElement.dataset.theme = tema === "claro" ? "light" : "dark";
     } catch (e) { /* sin almacenamiento: se usa el del sistema */ }
   </script>
-  <link rel="stylesheet" href="/static/estilos.css?v=10">
+  <link rel="stylesheet" href="estilos.css?v=11">
 </head>
 <body>
   <header class="barra">
@@ -19,7 +19,7 @@
       <span class="logo" aria-hidden="true">♪</span>
       <div>
         <h1>Generador de beatmaps <span>osu!mania</span></h1>
-        <p>Audio o YouTube → mapas 4K/7K que siguen a cada instrumento</p>
+        <p>Audio → mapas 4K/7K que siguen a cada instrumento</p>
       </div>
     </div>
     <button id="tema" type="button" class="boton-icono" title="Cambiar tema" aria-label="Cambiar tema">
@@ -40,19 +40,16 @@
     <section id="paso-cancion" class="tarjeta">
       <header class="tarjeta-titulo">
         <span class="numero">1</span>
-        <div><h2>Canción</h2><p>Sube un audio o pega un enlace. Se analiza una sola vez.</p></div>
+        <div><h2>Canción</h2><p>Sube un audio. Se analiza una sola vez, aquí mismo en tu navegador.</p></div>
       </header>
 
       <div id="fuente" class="fuente">
         <label id="zona-audio" class="zona-audio">
           <input id="audio" name="audio" type="file" accept=".mp3,.wav,.flac,.ogg,audio/*">
           <strong id="nombre-audio">Arrastra o elige un audio</strong>
-          <small>MP3 · WAV · FLAC · OGG (máx. 80 MB)</small>
+          <small>MP3 · WAV · FLAC · OGG · M4A</small>
         </label>
-        <div class="o">o</div>
-        <label class="campo">Enlace de YouTube
-          <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
-        </label>
+        <p class="privado">El audio no sale de tu equipo: el análisis y la generación se hacen en el navegador.</p>
       </div>
 
       <div id="cancion-cargada" class="cancion-cargada" hidden>
@@ -194,16 +191,22 @@
       <audio id="reproductor" preload="auto"></audio>
     </section>
 
+    <footer class="pie">
+      Todo corre en tu navegador. Codificación MP3 con <a href="https://github.com/zhuker/lamejs">lamejs</a> (LGPL).
+      osu! es una marca de ppy Pty Ltd; este generador no está afiliado a osu!.
+    </footer>
+
     <!-- ===================== Barra de acción (siempre visible) ===================== -->
     <div class="accion">
       <div class="accion-texto">
         <span id="cambios" class="cambios" hidden>Cambios sin aplicar</span>
+        <progress id="progreso" class="progreso" max="1" value="0" hidden></progress>
         <p id="estado" class="estado" role="status">Elige una canción para empezar.</p>
       </div>
       <button id="boton-accion" type="submit" class="boton-principal">Analizar canción</button>
     </div>
   </form>
 
-  <script src="/static/app.js?v=11"></script>
+  <script type="module" src="js/app.js?v=12"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
+node_modules/
+.env
+salida/
+# restos de la versión en Python
 __pycache__/
 *.pyc
-.env
-.venv/
 trabajos/
-salida/
-.pytest_cache/

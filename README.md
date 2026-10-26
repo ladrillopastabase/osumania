@@ -1,61 +1,74 @@
 # Generador automático de beatmaps para osu!mania
 
-Aplicación web que recibe una canción (MP3 / WAV / FLAC / OGG, o un enlace de YouTube), la analiza y genera
+Página web que recibe una canción (MP3 / WAV / FLAC / OGG / M4A), la analiza y genera
 beatmaps de **4K y 7K** en cuatro dificultades (**Easy · Normal · Hard · Insane**),
 con patrones híbridos basados en ritmo, melodía y jugabilidad. Los mapas se
 previsualizan en el navegador y se descargan como `.osu` sueltos o como un `.osz`
 listo para importar en osu! (basta con abrirlo).
 
-## Puesta en marcha
+**Todo corre en el navegador** (JavaScript, sin servidor): el audio no sale del equipo
+del usuario. Por eso se puede publicar gratis en **GitHub Pages**.
 
-Requisitos: Python 3.11+ y `ffmpeg` en el PATH (para MP3/FLAC/OGG, para enlaces de
-YouTube y para convertir el audio a MP3 dentro del `.osz`; sin ffmpeg solo se admite WAV).
+## Publicar en GitHub Pages
+
+1. Sube el repositorio a GitHub (la página está en la raíz: `index.html`).
+2. En el repositorio: **Settings → Pages → Build and deployment → Source: Deploy from a
+   branch**, elige la rama (por ejemplo `main`) y la carpeta **`/ (root)`**, y guarda.
+3. En uno o dos minutos la página queda en `https://<usuario>.github.io/<repositorio>/`.
+
+No hay que compilar nada: son archivos estáticos (módulos ES y trabajadores web). El
+archivo `.nojekyll` evita que GitHub Pages procese el sitio con Jekyll.
+
+## Probar en el equipo
+
+Los módulos y trabajadores web no funcionan abriendo `index.html` con doble clic
+(`file://`); hace falta un servidor local cualquiera:
 
 ```bash
-pip install -r requirements.txt
-python app.py            # http://localhost:5000
+python3 -m http.server 8000      # o: npx serve
+# abrir http://localhost:8000
 ```
 
-También hay una línea de comandos:
-
-```bash
-python -m motor.cli "Artista - Tema.mp3" --teclas 4 7 --dificultades Hard Insane \
-    --capas bombo=1 caja=0.9 platillos=0.3 bajo=0.8 melodia=1 --imagen fondo.jpg \
-    --artista "Artista" --salida salida/
-```
-
-Pruebas: `python -m pytest -q`. Incluyen una canción sintética con ritmo conocido
-(`tests/sintetico.py`) que verifica que no haya notas fantasma, que se cubran los golpes
+Pruebas (Node 20+): `npm test`. Usan canciones sintéticas con ritmo conocido
+(`tests/sintetico.js`) y verifican que no haya notas fantasma, que se cubran los golpes
 principales, que los patrones duren, que los compases repetidos tengan el mismo ritmo, que
-las capas detecten cada instrumento y que los controles de percusión/melodía cambien el mapa.
+las capas detecten cada instrumento, que los controles de influencia cambien el mapa, que
+los holds sean cortos y variados, y que el `.osu`, el recorte, el `.osz` y la lectura de
+etiquetas funcionen.
 
 ## Arquitectura
 
 ```
-Audio (MP3/WAV/FLAC)
-  └─ motor/audio.py        decodificación con ffmpeg, mono a 22 050 Hz
-      └─ motor/analisis.py   BPM y pulsos · onsets y energía · melodía · secciones
-          ├─ motor/capas.py      separación por instrumento (bombo, caja, platillos, bajo, melodía)
-          └─ motor/generador.py   selección de eventos → columnas → patrones → holds
-              ├─ motor/dificultades.py   perfiles Easy/Normal/Hard/Insane para 4K y 7K
-              ├─ motor/validador.py      jugabilidad + estadísticas
-              ├─ motor/exportador.py     .osu v14 y paquete .osz
-              └─ motor/imagen.py         fondo: imagen subida, miniatura de YouTube o portada
-app.py + static/            interfaz web (subida, parámetros, previsualización, descargas)
+index.html · estilos.css · js/app.js     interfaz (pasos, línea de tiempo, previsualización)
+  ├─ js/audio.js        decodificación (Web Audio), mono a 22 050 Hz, recorte con fundido,
+  │                     etiquetas y carátula (ID3 / FLAC), imagen de fondo a JPG
+  ├─ js/mp3.js          trabajador: codificación a MP3 con lamejs
+  ├─ js/zip.js          paquete .osz (zip sin compresión, con CRC32)
+  └─ js/trabajador.js   trabajador con el motor (no congela la página)
+      └─ js/motor/analisis.js    BPM y pulsos · onsets y energía · melodía · secciones
+          ├─ js/motor/capas.js       separación por instrumento (bombo, caja, platillos, bajo, melodía)
+          ├─ js/motor/dsp.js         FFT, filtros (como scipy.ndimage), percentiles
+          └─ js/motor/generador.js   selección de eventos → columnas → patrones → holds
+              ├─ js/motor/dificultades.js   perfiles Easy/Normal/Hard/Insane para 4K y 7K
+              ├─ js/motor/validador.js      jugabilidad + estadísticas
+              ├─ js/motor/recorte.js        tramo de la canción
+              └─ js/motor/exportador.js     .osu v14
 ```
 
-Los tres componentes son independientes: la interfaz solo llama al motor, y el motor
-no sabe nada de la web (la CLI usa exactamente las mismas funciones).
+El motor (`js/motor/`) no sabe nada del navegador: corre igual en Node (así se prueba).
+Es una traducción de la versión anterior en Python (numpy/scipy), comprobada contra ella:
+con las mismas señales da el mismo BPM, offset, onsets, capas y secciones.
 
-### Motor de análisis (`motor/analisis.py`)
+### Motor de análisis (`js/motor/analisis.js`)
 
-Todo con numpy/scipy, procesando el espectrograma por bloques.
+FFT propia y filtros equivalentes a los de scipy, en un trabajador web.
 
 - **Onsets y energía**: flujo espectral sobre 64 bandas mel (ventana de 1024), separado
   en graves (<200 Hz), medios y agudos. Cada banda pesa lo mismo en la envolvente total.
   Desfase calibrado con clics sintéticos: error < 12 ms.
 - **BPM y pulsos**: autocorrelación de la envolvente (con énfasis en graves) y un prior
-  centrado en 140 BPM; luego se afinan BPM y fase buscando la rejilla constante que mejor
+  centrado en 140 BPM (si gana un tempo de menos de 100 BPM y el doble está casi igual de
+  marcado, se usa el doble, como en DnB o half-time); luego se afinan BPM y fase buscando la rejilla constante que mejor
   calza con los golpes, y se redondea a BPM entero/.5 cuando corresponde. El tiempo fuerte
   del compás se elige donde más pega el bombo.
 - **Melodía**: altura dominante por suma de armónicos (G2–D#6, ventana de 2048) y una
@@ -65,7 +78,7 @@ Todo con numpy/scipy, procesando el espectrograma por bloques.
   Las de clímax se exportan como **kiai**.
 - **Notas sostenidas**: cuánto dura la energía tonal tras un ataque (para los holds).
 
-### Capas por instrumento (`motor/capas.py`)
+### Capas por instrumento (`js/motor/capas.js`)
 
 Sobre un espectrograma mel de 128 bandas se aplica **HPSS** (separación armónico/percusiva
 con filtros de mediana): lo que se sostiene en el tiempo es armónico y lo que ocupa muchas
@@ -106,14 +119,14 @@ el nuevo supera al actual en un 25 %. El destacado:
 - **decide los holds**: duran lo que dura la nota de ese instrumento (medido en su capa, no en
   la mezcla) y son más probables cuando ese instrumento es el destacado.
 
-Bombo y bajo comparten registro: una nota real de bajo cambia de altura y la cola de un 808
-no; con eso se decide a quién atribuir cada golpe grave. En la canción de prueba con
-instrumentos que se turnan (`cancion_capas`): el destacado sale bien en las tres partes
+Bombo, caja y bajo comparten registro: una nota real de bajo cambia de altura y la cola de un 808
+o el cuerpo de una caja no; con eso se decide a quién atribuir cada golpe grave. En la canción de prueba con
+instrumentos que se turnan (`cancionCapas`): el destacado sale bien en las tres partes
 (bajo, batería, voz), en 7K las columnas siguen la dirección del bajo en ~90-95 % de los
 cambios (en 4K una línea de 5 notas seguidas no cabe en 4 columnas y baja a ~60 %), y las
 notas largas de la voz se vuelven holds con el largo correcto.
 
-### Motor de generación híbrida (`motor/generador.py`)
+### Motor de generación híbrida (`js/motor/generador.js`)
 
 1. **Eventos**: los ataques de cada capa se ajustan a la rejilla de la dificultad: 1/1 y 1/2 en
    Easy/Normal, 1/4 o 1/3 (donde hay tresillos) en Hard/Insane. Un golpe que no cae cerca de
@@ -173,18 +186,16 @@ patrones manteniendo el ritmo.
 
 ### Parámetros en la interfaz
 
-- **Audio**: un archivo o un enlace de YouTube (`youtube.com`, `youtu.be`, `music.youtube.com`).
-  El audio se extrae con [yt-dlp](https://github.com/yt-dlp/yt-dlp) (`motor/youtube.py`),
-  solo del video indicado (no listas), hasta 15 minutos y sin transmisiones en vivo. Título y
-  artista se toman del video ("Artista - Tema") si no se escriben a mano. Si YouTube cambia
-  y la descarga falla, actualiza yt-dlp: `pip install -U yt-dlp`.
+- **Audio**: un archivo que el navegador sepa decodificar (MP3, WAV, FLAC, OGG, M4A…).
+  Título, artista y carátula se leen de las etiquetas del MP3 (ID3) o FLAC; si no hay, del
+  nombre del archivo ("Artista - Tema.mp3").
 - **Modos** 4K / 7K y **dificultades** a generar.
 - **Influencia de cada instrumento** (0–100 %: bombo, caja, platillos, bajo, melodía/voz; con
   preajustes *Equilibrado*, *Batería*, *Melodía / voz*, *Bajo* y *Todo*). Un instrumento en
   0 % no genera notas, ni siquiera de relleno. La vista de capas muestra arriba qué instrumento
   quedó como destacado en cada tramo.
-- **Imagen de fondo** (opcional): si no se sube una, se usa la miniatura del video de
-  YouTube o la carátula incrustada en el MP3/FLAC. Se guarda como JPG de hasta 1920 px y
+- **Imagen de fondo** (opcional): si no se sube una, se usa la carátula incrustada en el
+  MP3/FLAC. Se guarda como JPG de hasta 1920 px y
   se ve también detrás de la previsualización.
 - **Densidad** (0.5×–1.8×) y **holds** (0×–2.5×; sobre 1× es estilo LN).
 - **Avanzado**: BPM y offset manuales (útil si el BPM detectado sale a la mitad o al doble)
@@ -192,43 +203,48 @@ patrones manteniendo el ritmo.
 
 **Recorte**: en la línea de tiempo se arrastran el inicio y el fin (o se escriben, en
 `m:ss.s`); por defecto se ajustan al inicio de compás más cercano. El mapa se genera sobre la
-canción completa (BPM y secciones más estables) y luego se recorta (`motor/recorte.py`): el
-audio se corta con precisión de muestra (`atrim` de ffmpeg) con un fundido final opcional, las
+canción completa (BPM y secciones más estables) y luego se recorta (`js/motor/recorte.js`): el
+audio se corta con precisión de muestra con un fundido final opcional y se codifica a MP3, las
 notas se desplazan, los holds que pasan el final se acortan, durante el fundido no quedan
 notas y el punto de tiempo y el kiai se corren al tramo. El `.osz` lleva solo el audio
 recortado. Mínimo 10 s.
 
 **Instrumentos por sección**: cada sección detectada puede usar los pesos globales, un
 preajuste (*Batería*, *Melodía / voz*, *Bajo*, *Todo*), *Sin notas* o pesos personalizados.
-Por API: `capas_secciones` = `[{"inicio": s, "fin": s, "capas": {"bombo": 0..1, …}}]`; fuera
+En el motor: `capasSecciones` = `[{inicio: s, fin: s, capas: {bombo: 0..1, …}}]`; fuera
 de esos tramos rigen los globales.
 
-**Interfaz**: un flujo de pasos en orden — 1. Canción (subir/enlace; se analiza una vez),
+**Interfaz**: un flujo de pasos en orden — 1. Canción (se analiza una vez),
 2. Recorte, 3. Instrumentos (toda la canción y, opcionalmente, por sección), 4. Mapas (modos,
 dificultades, densidad, holds) y 5. Resultados. Una barra fija abajo tiene siempre el único
 botón de acción: *Analizar canción* → *Generar mapas* → *Regenerar*. Si después de generar se
 cambia cualquier ajuste, aparece «Cambios sin aplicar» y el botón pasa a *Aplicar cambios y
 regenerar*. Tema claro, oscuro o automático con el botón de la barra superior.
 
-**Regenerar sin volver a descargar**: la primera vez la canción se sube o descarga y se
-analiza (`POST /api/trabajos`). Después, el formulario muestra la canción cargada y cada
-*Regenerar* (`POST /api/trabajos/<id>/generar`) usa el análisis guardado: se pueden cambiar
-título, artista, creador, imagen de fondo y todos los parámetros sin descargar ni analizar de
-nuevo. Solo si se cambia el BPM o el offset manual se vuelve a analizar el audio ya guardado.
-La vista previa conserva la dificultad y la posición que se estaban mirando.
+**Regenerar sin volver a analizar**: la canción se decodifica y analiza una sola vez; el
+análisis queda en el trabajador. Cada *Regenerar* usa ese análisis: se pueden cambiar título,
+artista, creador, imagen de fondo y todos los parámetros al instante. Solo si se cambia el BPM
+o el offset manual se vuelve a analizar. La vista previa conserva la dificultad que se estaba
+mirando.
 
-### Exportador (`motor/exportador.py`)
+### Exportador (`js/motor/exportador.js`, `js/zip.js`)
 
 Escribe `.osu` v14 (`Mode: 3`, `CircleSize` = teclas, un punto de tiempo rojo y puntos
 heredados para kiai, `PreviewTime` en el primer clímax). Las notas usan
 `x = columna·512/K + 256/K`, de modo que osu! las lee en la columna correcta. Si hay
-imagen, se declara como fondo en `[Events]`. El `.osz` incluye el audio (WAV/FLAC se
-convierten a MP3), el fondo y todas las dificultades.
+imagen, se declara como fondo en `[Events]`. El `.osz` incluye el audio, el fondo y todas
+las dificultades. Un MP3 u OGG sin recortar va tal cual; lo demás (WAV, FLAC, M4A o un tramo
+recortado) se codifica a MP3 de 192 kbps con [lamejs](https://github.com/zhuker/lamejs)
+(`vendor/`, licencia LGPL). Se descartan las 1105 muestras de retraso del codificador para que
+el audio quede alineado con las notas.
 
 ## Limitaciones conocidas
 
-- Usa la descarga desde YouTube solo con contenido que tengas derecho a usar.
-
+- Ya no se puede pegar un enlace de YouTube: una página estática no puede descargar audio
+  de YouTube (lo bloquean el navegador y YouTube). Descarga el audio por tu cuenta (solo con
+  contenido que tengas derecho a usar) y súbelo.
+- Una canción larga ocupa bastante memoria en el navegador (≈ 200 MB por cada 5 minutos);
+  en teléfonos viejos puede fallar.
 - Supone **tempo constante**: canciones con cambios de BPM o grabaciones en vivo con
   tempo variable quedarán desfasadas en algunas partes (se puede forzar BPM/offset).
 - Asume compás de 4/4.
