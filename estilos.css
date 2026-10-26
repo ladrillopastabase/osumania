@@ -236,8 +236,21 @@ input[type="checkbox"] { accent-color: var(--acento); }
 .dos { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 
 /* 1. Canción */
-.fuente { display: grid; gap: 10px; }
+.fuente { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); gap: 10px 14px; align-items: center; }
+.fuente .o { color: var(--suave); }
+.fuente .privado, .fuente .ayudante { grid-column: 1 / -1; }
 .fuente .privado { margin: 0; color: var(--suave); font-size: .84rem; }
+.youtube { display: grid; gap: 6px; }
+.ayudante-estado { margin: 0; font-size: .8rem; color: var(--suave); }
+.ayudante-estado.listo { color: var(--ok); }
+.ayudante-estado.error { color: var(--error); }
+.ayudante { font-size: .86rem; }
+.ayudante[open] { background: var(--hundido); border-radius: 10px; padding: 10px 14px; }
+.ayudante p, .ayudante ol { margin: 8px 0; }
+.ayudante li { margin: 4px 0; }
+.ayudante code { background: var(--panel); border: 1px solid var(--borde); border-radius: 5px; padding: 1px 5px; font-size: .82rem; overflow-wrap: anywhere; }
+.boton-chico { padding: 3px 10px; font-size: .82rem; }
+.ayudante a { color: var(--acento-2); }
 .zona-audio {
   border: 2px dashed var(--borde);
   border-radius: 10px;
@@ -385,7 +398,8 @@ button.ficha.activa { border-color: var(--acento); color: var(--acento); font-we
   .flujo { padding: 12px 16px 130px; }
   .barra { padding: 10px 16px; }
   .marca p { display: none; }
-  .dos { grid-template-columns: 1fr; }
+  .dos, .fuente { grid-template-columns: 1fr; }
+  .fuente .o { text-align: center; }
   .seccion { grid-template-columns: 6px minmax(0, 1fr); }
   .seccion select { grid-column: 2; }
   .deslizador, .capa-fila { grid-template-columns: 96px minmax(0, 1fr) 40px; }

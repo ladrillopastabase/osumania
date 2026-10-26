@@ -11,7 +11,7 @@
       if (tema === "claro" || tema === "oscuro") document.documentElement.dataset.theme = tema === "claro" ? "light" : "dark";
     } catch (e) { /* sin almacenamiento: se usa el del sistema */ }
   </script>
-  <link rel="stylesheet" href="estilos.css?v=11">
+  <link rel="stylesheet" href="estilos.css?v=12">
 </head>
 <body>
   <header class="barra">
@@ -40,7 +40,7 @@
     <section id="paso-cancion" class="tarjeta">
       <header class="tarjeta-titulo">
         <span class="numero">1</span>
-        <div><h2>Canción</h2><p>Sube un audio. Se analiza una sola vez, aquí mismo en tu navegador.</p></div>
+        <div><h2>Canción</h2><p>Sube un audio o pega un enlace de YouTube. Se analiza una sola vez, aquí mismo en tu navegador.</p></div>
       </header>
 
       <div id="fuente" class="fuente">
@@ -49,6 +49,30 @@
           <strong id="nombre-audio">Arrastra o elige un audio</strong>
           <small>MP3 · WAV · FLAC · OGG · M4A</small>
         </label>
+        <div class="o">o</div>
+        <div class="youtube">
+          <label class="campo">Enlace de YouTube
+            <input id="url" name="url" type="url" inputmode="url" placeholder="https://www.youtube.com/watch?v=…">
+          </label>
+          <p id="estado-ayudante" class="ayudante-estado">Para YouTube hace falta el ayudante (ver abajo).</p>
+        </div>
+        <details id="ayudante" class="ayudante">
+          <summary>Cómo activar la descarga de YouTube</summary>
+          <p>Una página web no puede bajar audio de YouTube por sí sola. El <b>ayudante</b> es un programa pequeño
+            que corre <a href="https://github.com/yt-dlp/yt-dlp">yt-dlp</a> en tu computador y le pasa el audio a esta página.</p>
+          <ol>
+            <li>Instala <a href="https://www.python.org/downloads/">Python 3</a> y, recomendado, <a href="https://deno.com">Deno</a> o <a href="https://nodejs.org">Node</a> (YouTube los exige).</li>
+            <li>Descarga <a id="enlace-ayudante" href="ayudante/youtube.py" download>youtube.py</a>.</li>
+            <li>En una terminal: <code>pip install "yt-dlp[default]"</code> y luego <code>python youtube.py</code>. Déjala abierta.</li>
+            <li>Vuelve aquí y pulsa <button type="button" id="probar-ayudante" class="boton-secundario boton-chico">Buscar ayudante</button>.
+              Si el navegador pregunta si la página puede acceder a dispositivos de tu red local, acepta.</li>
+          </ol>
+          <p class="ayuda">Funciona en Chrome, Edge y Firefox (Safari no deja que una página segura hable con tu equipo).
+            Si YouTube empieza a fallar, actualiza: <code>pip install -U "yt-dlp[default]"</code>.</p>
+          <label class="campo">Servidor propio (opcional, si desplegaste el ayudante en la nube)
+            <input id="servidor-youtube" type="url" inputmode="url" placeholder="https://mi-ayudante.onrender.com">
+          </label>
+        </details>
         <p class="privado">El audio no sale de tu equipo: el análisis y la generación se hacen en el navegador.</p>
       </div>
 
@@ -207,6 +231,6 @@
     </div>
   </form>
 
-  <script type="module" src="js/app.js?v=12"></script>
+  <script type="module" src="js/app.js?v=13"></script>
 </body>
 </html>

@@ -3,6 +3,7 @@
 
 import { canalesTramo, codificarMp3, decodificar, FRECUENCIA_ANALISIS, imagenAJpeg, leerEtiquetas, senalAnalisis }
   from "./audio.js";
+import { descargarDeYoutube, buscarAyudante, esUrlYoutube, guardarServidor, servidorGuardado } from "./youtube.js";
 import { crearZip } from "./zip.js";
 
 const $ = (id) => document.getElementById(id);
@@ -209,6 +210,7 @@ function elegirArchivo(archivo) {
   if (!archivo) return;
   estado.archivo = archivo;
   estado.fuenteNueva = true;
+  $("url").value = "";
   $("nombre-audio").textContent = archivo.name;
   // "Artista - Título.mp3" rellena los metadatos si están vacíos.
   const base = archivo.name.replace(/\.[^.]+$/, "");
@@ -222,6 +224,48 @@ function elegirArchivo(archivo) {
 }
 
 entradaAudio.addEventListener("change", () => elegirArchivo(entradaAudio.files[0]));
+$("url").addEventListener("input", () => {
+  if (!$("url").value.trim()) return;
+  estado.fuenteNueva = true;
+  if (estado.archivo) {
+    estado.archivo = null;
+    entradaAudio.value = "";
+    $("nombre-audio").textContent = "Arrastra o elige un audio";
+  }
+});
+// Al pegar un enlace se busca el ayudante, para avisar antes de analizar si falta.
+$("url").addEventListener("change", () => {
+  if (esUrlYoutube($("url").value)) comprobarAyudante();
+});
+
+// ---------------------------------------------------------------- ayudante de YouTube
+
+function mostrarAyudante(texto, clase = "") {
+  const nodo = $("estado-ayudante");
+  nodo.textContent = texto;
+  nodo.className = `ayudante-estado ${clase}`;
+}
+
+async function comprobarAyudante() {
+  mostrarAyudante("Buscando el ayudante de YouTube…");
+  const ayudante = await buscarAyudante((base) => mostrarAyudante(`Buscando el ayudante en ${base}…`));
+  if (ayudante) {
+    const sinJs = ayudante.js.length ? "" : " (sin Deno/Node: YouTube podría fallar)";
+    mostrarAyudante(`✔ Ayudante conectado (yt-dlp ${ayudante.version})${sinJs}.`, "listo");
+  } else {
+    mostrarAyudante("✖ No se encontró el ayudante. Ábrelo en tu computador (ver abajo) o sube el audio.", "error");
+    $("ayudante").open = true;
+  }
+  return ayudante;
+}
+
+$("probar-ayudante").addEventListener("click", comprobarAyudante);
+$("servidor-youtube").value = servidorGuardado();
+$("servidor-youtube").addEventListener("change", () => {
+  const valor = $("servidor-youtube").value.trim();
+  guardarServidor(valor);
+  if (valor) comprobarAyudante();
+});
 ["dragenter", "dragover"].forEach((ev) => zona.addEventListener(ev, (e) => {
   e.preventDefault();
   zona.classList.add("arrastrando");
@@ -251,6 +295,7 @@ $("otra-cancion").addEventListener("click", () => {
   estado.audioSalida = null;
   fijarFondo(null);
   entradaAudio.value = "";
+  $("url").value = "";
   $("imagen").value = "";
   $("titulo").value = "";
   $("artista").value = "";
@@ -329,13 +374,14 @@ function marcarCambios() {
   actualizarAccion();
 }
 
+const FUERA_DE_AJUSTES = ["audio", "url", "servidor-youtube"];
 // Cualquier cambio de ajustes después de generar queda "sin aplicar" hasta regenerar.
 formulario.addEventListener("input", (e) => {
-  if (e.target.id === "audio") { actualizarAccion(); return; }
+  if (FUERA_DE_AJUSTES.includes(e.target.id)) { actualizarAccion(); return; }
   marcarCambios();
 });
 formulario.addEventListener("change", (e) => {
-  if (e.target.id === "audio") { actualizarAccion(); return; }
+  if (FUERA_DE_AJUSTES.includes(e.target.id)) { actualizarAccion(); return; }
   marcarCambios();
 });
 
@@ -456,13 +502,37 @@ function ajustesPorSeccion() {
   });
 }
 
+/** Baja el audio del enlace con el ayudante; completa título, artista y miniatura. */
+async function bajarDeYoutube(url) {
+  const descarga = await descargarDeYoutube(url, (etapa, fraccion) => {
+    if (etapa === "buscando") mostrarEstado("Buscando el ayudante de YouTube…");
+    else if (etapa === "descargando") mostrarEstado("Descargando el audio de YouTube (puede tardar unos segundos)…");
+    else mostrarEstado("Recibiendo el audio…");
+    mostrarProgreso(fraccion ?? 0);
+  });
+  mostrarAyudante("✔ Ayudante conectado.", "listo");
+  if (descarga.titulo && !$("titulo").value) $("titulo").value = descarga.titulo;
+  if (descarga.artista && (!$("artista").value || $("artista").value === "Desconocido")) $("artista").value = descarga.artista;
+  return descarga;
+}
+
 async function analizar() {
-  if (!estado.archivo) {
-    mostrarEstado("Elige un archivo de audio.", true);
+  const url = $("url").value.trim();
+  if (!estado.archivo && !url) {
+    mostrarEstado("Elige un archivo de audio o pega un enlace de YouTube.", true);
+    return;
+  }
+  if (!estado.archivo && !esUrlYoutube(url)) {
+    mostrarEstado("El enlace no es de YouTube.", true);
     return;
   }
   const forzado = bpmYOffset();
-  const archivo = estado.archivo;
+  let archivo = estado.archivo;
+  let miniatura = null;
+  mostrarProgreso(0);
+  if (!archivo) {
+    ({ archivo, miniatura } = await bajarDeYoutube(url));
+  }
   mostrarEstado("Leyendo el audio…");
   mostrarProgreso(0);
   await pintar();
@@ -472,7 +542,8 @@ async function analizar() {
   await pintar();
   const senal = await senalAnalisis(buffer);
   const extension = (archivo.name.match(/\.([^.]+)$/) || [, ""])[1].toLowerCase();
-  estado.cancion = { bytes: new Uint8Array(bytes), buffer, senal, extension, nombre: archivo.name };
+  estado.cancion = { bytes: new Uint8Array(bytes), buffer, senal, extension, nombre: archivo.name,
+    fuente: estado.archivo ? "" : url };
   estado.audioSalida = null;
 
   // Título, artista y carátula incrustados (MP3/FLAC) completan lo que falte.
@@ -483,9 +554,11 @@ async function analizar() {
   if (etiquetas.artista && (!$("artista").value || $("artista").value === "Desconocido"
       || base.startsWith($("artista").value))) $("artista").value = etiquetas.artista;
   if (!$("artista").value) $("artista").value = "Desconocido";
+  // Fondo: la imagen elegida a mano; si no, la miniatura del video o la carátula.
   if (!$("imagen").files[0]) {
-    const portada = etiquetas.portada ? await imagenAJpeg(new Blob([etiquetas.portada.datos], { type: etiquetas.portada.tipo })) : null;
-    fijarFondo(portada);
+    const origen = miniatura
+      || (etiquetas.portada ? new Blob([etiquetas.portada.datos], { type: etiquetas.portada.tipo }) : null);
+    fijarFondo(origen ? await imagenAJpeg(origen) : null);
   }
 
   const resultado = await pedirAnalisis(forzado);
@@ -562,7 +635,7 @@ async function generar() {
     recorte: recorte ? { inicio: recorte.inicio, fin: recorte.fin, ajustarCompas: $("recorte-compas").checked } : null,
     fundido,
     meta: { titulo, artista, creador: formulario.elements.creador.value.trim() || "Generador osu!mania",
-      fuente: "", etiquetas: "generado automatico" },
+      fuente: estado.cancion.fuente, etiquetas: "generado automatico" },
     audio: original ? `audio.${estado.cancion.extension}` : "audio.mp3",
     fondo: estado.fondoJpg ? "fondo.jpg" : null,
   };

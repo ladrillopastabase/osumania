@@ -1,0 +1,2 @@
+# "default" incluye yt-dlp-ejs, los componentes que yt-dlp necesita para YouTube.
+yt-dlp[default]

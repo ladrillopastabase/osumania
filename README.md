@@ -36,6 +36,39 @@ las capas detecten cada instrumento, que los controles de influencia cambien el 
 los holds sean cortos y variados, y que el `.osu`, el recorte, el `.osz` y la lectura de
 etiquetas funcionen.
 
+## Descargar de YouTube
+
+Una página estática no puede bajar audio de YouTube por sí sola (el navegador lo impide por
+CORS y YouTube cifra los enlaces). Para eso está el **ayudante** (`ayudante/youtube.py`): un
+programa pequeño que corre [yt-dlp](https://github.com/yt-dlp/yt-dlp) y le pasa el audio a la
+página. Solo usa la biblioteca estándar de Python y yt-dlp.
+
+**En tu computador** (lo más confiable: YouTube no bloquea la IP de tu casa):
+
+```bash
+pip install "yt-dlp[default]"
+python ayudante/youtube.py        # deja la ventana abierta
+```
+
+Conviene tener [Deno](https://deno.com) o [Node](https://nodejs.org) instalado: yt-dlp los
+necesita para YouTube. La página busca el ayudante en `http://127.0.0.1:8787`. Si el navegador
+pregunta si la página puede acceder a dispositivos de la red local, hay que aceptar. Funciona en
+Chrome, Edge y Firefox; Safari no deja que una página `https` hable con el equipo.
+
+**En un servidor** (para usarlo desde cualquier equipo o teléfono): el mismo script, con
+`python youtube.py --host 0.0.0.0` (toma el puerto de la variable `PORT`), en cualquier
+servicio que corra Python, por ejemplo Render o Railway. Luego se pega su URL en
+«Servidor propio» dentro de la página. Ojo: YouTube suele bloquear las IP de estos
+servicios («Sign in to confirm you're not a bot»), así que puede fallar seguido.
+
+Por seguridad, el ayudante solo atiende a páginas de `*.github.io` y a `localhost`
+(para que otra web que visites no pueda usarlo); se agregan otras con
+`--origen 'https://midominio\.com'` o la variable `ORIGENES`.
+
+Rutas: `/estado`, `/audio?url=…` (Opus/webm o m4a, con título y artista en la cabecera
+`X-Metadatos`) y `/miniatura?url=…`. Solo videos de YouTube, sin listas ni transmisiones en
+vivo, de hasta 15 minutos. Pruebas: `cd ayudante && python -m unittest`.
+
 ## Arquitectura
 
 ```
@@ -186,16 +219,16 @@ patrones manteniendo el ritmo.
 
 ### Parámetros en la interfaz
 
-- **Audio**: un archivo que el navegador sepa decodificar (MP3, WAV, FLAC, OGG, M4A…).
-  Título, artista y carátula se leen de las etiquetas del MP3 (ID3) o FLAC; si no hay, del
-  nombre del archivo ("Artista - Tema.mp3").
+- **Audio**: un archivo que el navegador sepa decodificar (MP3, WAV, FLAC, OGG, M4A…) o un
+  enlace de YouTube (con el ayudante). Título, artista y carátula se leen de las etiquetas del
+  MP3 (ID3) o FLAC, o del video ("Artista - Tema"); si no hay, del nombre del archivo.
 - **Modos** 4K / 7K y **dificultades** a generar.
 - **Influencia de cada instrumento** (0–100 %: bombo, caja, platillos, bajo, melodía/voz; con
   preajustes *Equilibrado*, *Batería*, *Melodía / voz*, *Bajo* y *Todo*). Un instrumento en
   0 % no genera notas, ni siquiera de relleno. La vista de capas muestra arriba qué instrumento
   quedó como destacado en cada tramo.
-- **Imagen de fondo** (opcional): si no se sube una, se usa la carátula incrustada en el
-  MP3/FLAC. Se guarda como JPG de hasta 1920 px y
+- **Imagen de fondo** (opcional): si no se sube una, se usa la miniatura del video de
+  YouTube o la carátula incrustada en el MP3/FLAC. Se guarda como JPG de hasta 1920 px y
   se ve también detrás de la previsualización.
 - **Densidad** (0.5×–1.8×) y **holds** (0×–2.5×; sobre 1× es estilo LN).
 - **Avanzado**: BPM y offset manuales (útil si el BPM detectado sale a la mitad o al doble)
@@ -240,9 +273,8 @@ el audio quede alineado con las notas.
 
 ## Limitaciones conocidas
 
-- Ya no se puede pegar un enlace de YouTube: una página estática no puede descargar audio
-  de YouTube (lo bloquean el navegador y YouTube). Descarga el audio por tu cuenta (solo con
-  contenido que tengas derecho a usar) y súbelo.
+- La descarga de YouTube necesita el ayudante abierto (ver arriba). Úsala solo con contenido
+  que tengas derecho a usar.
 - Una canción larga ocupa bastante memoria en el navegador (≈ 200 MB por cada 5 minutos);
   en teléfonos viejos puede fallar.
 - Supone **tempo constante**: canciones con cambios de BPM o grabaciones en vivo con
