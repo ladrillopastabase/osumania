@@ -19,7 +19,7 @@
       <span class="logo" aria-hidden="true">♪</span>
       <div>
         <h1>Generador de beatmaps <span>osu!mania</span></h1>
-        <p>Audio → mapas 4K/7K que siguen a cada instrumento</p>
+        <p>Audio → mapas de 1K a 18K que siguen a cada instrumento</p>
       </div>
     </div>
     <button id="tema" type="button" class="boton-icono" title="Cambiar tema" aria-label="Cambiar tema">
@@ -156,9 +156,22 @@
         <div>
           <h3>Modos</h3>
           <div class="fichas">
+            <label class="ficha"><input type="checkbox" name="teclas" value="1"> 1K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="2"> 2K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="3"> 3K</label>
             <label class="ficha"><input type="checkbox" name="teclas" value="4" checked> 4K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="5"> 5K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="6"> 6K</label>
             <label class="ficha"><input type="checkbox" name="teclas" value="7"> 7K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="8"> 8K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="9"> 9K</label>
+            <label class="ficha"><input type="checkbox" name="teclas" value="10"> 10K</label>
+            <label class="ficha" title="Doble escenario (co-op): dos de 6 teclas"><input type="checkbox" name="teclas" value="12"> 12K</label>
+            <label class="ficha" title="Doble escenario (co-op): dos de 7 teclas"><input type="checkbox" name="teclas" value="14"> 14K</label>
+            <label class="ficha" title="Doble escenario (co-op): dos de 8 teclas"><input type="checkbox" name="teclas" value="16"> 16K</label>
+            <label class="ficha" title="Doble escenario (co-op): dos de 9 teclas"><input type="checkbox" name="teclas" value="18"> 18K</label>
           </div>
+          <p class="ayuda">De 1K a 10K en un escenario; 12K a 18K son dos escenarios (co-op), como en osu!.</p>
           <h3>Dificultades</h3>
           <div class="fichas">
             <label class="ficha"><input type="checkbox" name="dificultades" value="Easy" checked> Easy</label>
@@ -231,6 +244,6 @@
     </div>
   </form>
 
-  <script type="module" src="js/app.js?v=13"></script>
+  <script type="module" src="js/app.js?v=14"></script>
 </body>
 </html>

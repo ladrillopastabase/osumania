@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { NOMBRES, perfil } from "../js/motor/dificultades.js";
+import { dobleEscenario, NOMBRES, perfil, TECLAS_VALIDAS } from "../js/motor/dificultades.js";
 import { generarMapa, holdMaximo, OpcionesGeneracion } from "../js/motor/generador.js";
 import { validar } from "../js/motor/validador.js";
 import { cancion, cancionRealista, SECCIONES_SOSTENIDAS } from "./sintetico.js";
@@ -62,7 +62,7 @@ test("Easy 4K sin acordes", () => {
 });
 
 test("opciones inválidas", () => {
-  assert.throws(() => new OpcionesGeneracion({ teclas: 5 }));
+  for (const teclas of [0, 11, 13, 19, 4.5]) assert.throws(() => new OpcionesGeneracion({ teclas }));
   assert.throws(() => new OpcionesGeneracion({ percusion: 0, melodia: 0 }));
 });
 
@@ -202,3 +202,37 @@ for (const dificultad of NOMBRES) {
     assert.ok(maxima <= 2); // nunca una seguidilla de holds
   });
 }
+
+// --- cualquier cantidad de teclas (1K–10K, 12K–18K) ------------------------------
+
+for (const teclas of TECLAS_VALIDAS.filter((k) => k !== 4 && k !== 7)) {
+  test(`mapas válidos en ${teclas}K`, () => {
+    const { analisis: a } = realista();
+    const cantidades = [];
+    for (const dificultad of NOMBRES) {
+      const m = mapa(a, { teclas, dificultad });
+      const informe = validar(m, a.duracion);
+      assert.ok(informe.valido, `${dificultad}: ${informe.errores.join("; ")}`);
+      assert.ok(m.notas.every((n) => Number.isInteger(n.columna) && n.columna >= 0 && n.columna < teclas));
+      assert.ok(Math.max(...Object.keys(informe.estadisticas.acordes).map(Number)) <= perfil(dificultad, teclas).acordeMax);
+      cantidades.push(new Set(m.notas.map((n) => n.tiempo)).size);
+      if (teclas >= 4 && dificultad !== "Easy") {
+        // Se usa todo el teclado, no solo una parte.
+        assert.ok(informe.estadisticas.columnas.every((v) => v > 0), `${dificultad}: ${informe.estadisticas.columnas}`);
+      }
+    }
+    assert.ok(cantidades[3] > cantidades[0], cantidades.join(","));
+  });
+}
+
+test("perfiles: 4K y 7K de referencia, el resto crece con las teclas", () => {
+  assert.equal(perfil("Insane", 4).acordeMax, 3);
+  assert.equal(perfil("Insane", 7).acordeMax, 5);
+  assert.equal(perfil("Hard", 7).nps, 6.0);
+  for (const nombre of NOMBRES) {
+    const nps = TECLAS_VALIDAS.map((k) => perfil(nombre, k).nps);
+    assert.deepEqual(nps, [...nps].sort((x, y) => x - y));
+    for (const k of TECLAS_VALIDAS) assert.ok(perfil(nombre, k).acordeMax <= Math.min(k, 8));
+  }
+  assert.ok(dobleEscenario(12) && !dobleEscenario(10));
+});

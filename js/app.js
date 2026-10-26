@@ -32,11 +32,17 @@ const OPCIONES_SECCION = [
 const NOMBRE_ETIQUETA = { "tranquila": "Tranquila", "media": "Media", "intensa": "Intensa", "clímax": "Clímax" };
 const VARIABLE_ETIQUETA = { "tranquila": "--s-tranquila", "media": "--s-media", "intensa": "--s-intensa", "clímax": "--s-climax" };
 
-// Colores clásicos de skin mania (el campo de juego es oscuro en ambos temas).
-const COLORES_COLUMNA = {
-  4: ["#e8e8f0", "#66ccff", "#66ccff", "#e8e8f0"],
-  7: ["#e8e8f0", "#66ccff", "#e8e8f0", "#ffcc66", "#e8e8f0", "#66ccff", "#e8e8f0"],
-};
+// Colores clásicos de skin mania (el campo de juego es oscuro en ambos temas):
+// blanco y azul alternados desde los bordes, y amarillo en la columna central.
+// De 12K a 18K hay dos escenarios, cada uno con sus colores.
+function coloresColumnas(k) {
+  const escenario = k > 10 ? k / 2 : k;
+  return Array.from({ length: k }, (_, c) => {
+    const i = c % escenario;
+    if (escenario % 2 === 1 && i === (escenario - 1) / 2 && escenario > 1) return "#ffcc66";
+    return Math.min(i, escenario - 1 - i) % 2 ? "#66ccff" : "#e8e8f0";
+  });
+}
 
 const estado = {
   archivo: null,
@@ -374,7 +380,8 @@ function marcarCambios() {
   actualizarAccion();
 }
 
-const FUERA_DE_AJUSTES = ["audio", "url", "servidor-youtube"];
+// Controles que no cambian el mapa (fuente de audio, ayudante y vista previa).
+const FUERA_DE_AJUSTES = ["audio", "url", "servidor-youtube", "mapa-vista", "velocidad", "posicion"];
 // Cualquier cambio de ajustes después de generar queda "sin aplicar" hasta regenerar.
 formulario.addEventListener("input", (e) => {
   if (FUERA_DE_AJUSTES.includes(e.target.id)) { actualizarAccion(); return; }
@@ -1012,9 +1019,13 @@ function dibujarCampo() {
   const ahora = reproductor.currentTime * 1000;
   const velocidad = Number($("velocidad").value) / 40; // píxeles por ms
   const lineaJuicio = alto - 60;
-  const anchoColumna = Math.min(70, (ancho - 20) / k);
-  const izquierda = (ancho - anchoColumna * k) / 2;
-  const colores = COLORES_COLUMNA[k];
+  const doble = k > 10; // dos escenarios separados por un hueco
+  const anchoColumna = Math.min(70, (ancho - 20) / (k + (doble ? 0.8 : 0)));
+  const hueco = doble ? anchoColumna * 0.8 : 0;
+  const izquierda = (ancho - anchoColumna * k - hueco) / 2;
+  const xColumna = (c) => izquierda + c * anchoColumna + (doble && c >= k / 2 ? hueco : 0);
+  const anchoTotal = anchoColumna * k + hueco;
+  const colores = coloresColumnas(k);
   const visibleMs = lineaJuicio / velocidad;
 
   ctx.fillStyle = "#0e0d14";
@@ -1031,7 +1042,7 @@ function dibujarCampo() {
   }
   for (let c = 0; c < k; c++) {
     ctx.fillStyle = c % 2 ? "rgba(21, 19, 29, 0.85)" : "rgba(25, 23, 35, 0.85)";
-    ctx.fillRect(izquierda + c * anchoColumna, 0, anchoColumna, alto);
+    ctx.fillRect(xColumna(c), 0, anchoColumna, alto);
   }
 
   // Líneas de compás (con el offset del audio que suena, recortado o no).
@@ -1045,7 +1056,7 @@ function dibujarCampo() {
     const y = lineaJuicio - (t - ahora) * velocidad;
     ctx.beginPath();
     ctx.moveTo(izquierda, y);
-    ctx.lineTo(izquierda + anchoColumna * k, y);
+    ctx.lineTo(izquierda + anchoTotal, y);
     ctx.stroke();
   }
 
@@ -1055,8 +1066,9 @@ function dibujarCampo() {
     const final = fin > 0 ? fin : t;
     if (final < ahora - 200) continue;
     if (t > ahora + visibleMs) break;
-    const x = izquierda + c * anchoColumna + 3;
-    const w = anchoColumna - 6;
+    const borde = Math.min(3, anchoColumna * 0.12);
+    const x = xColumna(c) + borde;
+    const w = anchoColumna - 2 * borde;
     const y = lineaJuicio - (t - ahora) * velocidad;
     ctx.fillStyle = colores[c];
     if (fin > 0) {
@@ -1074,10 +1086,11 @@ function dibujarCampo() {
   }
 
   ctx.fillStyle = "#ff66aa";
-  ctx.fillRect(izquierda, lineaJuicio, anchoColumna * k, 3);
+  ctx.fillRect(izquierda, lineaJuicio, anchoTotal, 3);
   for (let c = 0; c < k; c++) {
     ctx.fillStyle = pulsadas[c] ? colores[c] : "#2a2639";
-    ctx.fillRect(izquierda + c * anchoColumna + 4, lineaJuicio + 12, anchoColumna - 8, 36);
+    const borde = Math.min(4, anchoColumna * 0.15);
+    ctx.fillRect(xColumna(c) + borde, lineaJuicio + 12, anchoColumna - 2 * borde, 36);
   }
 
   const duracion = duracionReproduccion();

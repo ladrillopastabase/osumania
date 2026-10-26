@@ -32,8 +32,27 @@ const AJUSTE_7K = {
 
 export const NOMBRES = Object.keys(BASE);
 
+// Modos que osu!mania admite: 1K–10K en un escenario y 12K–18K en dos (co-op).
+export const TECLAS_VALIDAS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18];
+export const dobleEscenario = (teclas) => teclas > 10;
+
+/**
+ * Perfil para cualquier cantidad de teclas. 4K y 7K son los de referencia; el resto
+ * se interpola en escala logarítmica (de 7K a 14K crece lo mismo que de 4K a 7K, no el
+ * doble): con más columnas caben más notas y acordes, pero las manos son las mismas.
+ */
 export function perfil(nombre, teclas) {
   if (!(nombre in BASE)) throw new Error(`Dificultad desconocida: ${nombre}`);
   const base = BASE[nombre];
-  return Object.freeze(teclas >= 7 ? { ...base, ...AJUSTE_7K[nombre] } : { ...base });
+  if (teclas === 4) return Object.freeze({ ...base });
+  const siete = AJUSTE_7K[nombre];
+  if (teclas === 7) return Object.freeze({ ...base, ...siete });
+  const t = Math.log2(teclas / 4) / Math.log2(7 / 4); // 0 en 4K, 1 en 7K
+  const acorde = base.acordeMax + t * (siete.acordeMax - base.acordeMax);
+  return Object.freeze({
+    ...base,
+    nps: +(base.nps * (siete.nps / base.nps) ** t).toFixed(2),
+    acordeMax: Math.max(1, Math.min(teclas, 8, Math.round(acorde))),
+    probAcorde: +Math.min(0.6, Math.max(0, base.probAcorde + t * (siete.probAcorde - base.probAcorde))).toFixed(3),
+  });
 }

@@ -1,7 +1,8 @@
 # Generador automático de beatmaps para osu!mania
 
 Página web que recibe una canción (MP3 / WAV / FLAC / OGG / M4A), la analiza y genera
-beatmaps de **4K y 7K** en cuatro dificultades (**Easy · Normal · Hard · Insane**),
+beatmaps de **1K a 18K** (de 1K a 10K en un escenario; 12K, 14K, 16K y 18K en dos, co-op)
+en cuatro dificultades (**Easy · Normal · Hard · Insane**),
 con patrones híbridos basados en ritmo, melodía y jugabilidad. Los mapas se
 previsualizan en el navegador y se descargan como `.osu` sueltos o como un `.osz`
 listo para importar en osu! (basta con abrirlo).
@@ -82,7 +83,7 @@ index.html · estilos.css · js/app.js     interfaz (pasos, línea de tiempo, pr
           ├─ js/motor/capas.js       separación por instrumento (bombo, caja, platillos, bajo, melodía)
           ├─ js/motor/dsp.js         FFT, filtros (como scipy.ndimage), percentiles
           └─ js/motor/generador.js   selección de eventos → columnas → patrones → holds
-              ├─ js/motor/dificultades.js   perfiles Easy/Normal/Hard/Insane para 4K y 7K
+              ├─ js/motor/dificultades.js   perfiles Easy/Normal/Hard/Insane para 1K–18K
               ├─ js/motor/validador.js      jugabilidad + estadísticas
               ├─ js/motor/recorte.js        tramo de la canción
               └─ js/motor/exportador.js     .osu v14
@@ -184,7 +185,7 @@ notas largas de la voz se vuelven holds con el largo correcto.
 4. **Frases**: los eventos se agrupan en frases de velocidad parecida (una ráfaga de 1/4 con
    un hueco o un ritmo 3-3-2 siguen siendo la misma frase), de hasta ~16 eventos.
 5. **Patrones por frase**: cada frase recibe un patrón completo que dura toda la frase —
-   escalera, trino, celda repetida (p. ej. `0213`), jumptrill, brackets (7K), chordjack
+   escalera, trino, celda repetida (p. ej. `0213`), jumptrill, brackets (5K o más), chordjack
    (Insane), manos alternas o contorno melódico— elegido según la velocidad, la dificultad,
    la intensidad y qué capa lleva la frase: si la llevan la melodía o la voz, las notas dibujan
    su contorno; si la lleva la batería, se usan patrones rítmicos. Los patrones de acordes
@@ -217,12 +218,21 @@ patrones manteniendo el ritmo.
 | Hard   | 1/4 · 1/3 | 5.2 / 6.0 | 2 / 4 | 170 ms | 7.5 |
 | Insane | 1/4 · 1/3 | 7.8 / 9.0 | 3 / 5 | 110 ms | 8.3 |
 
+**Otras cantidades de teclas**: 4K y 7K son las de referencia (tabla de arriba). Para el
+resto, la densidad, el acorde máximo y la probabilidad de acordes se interpolan en escala
+logarítmica (de 7K a 14K crece lo mismo que de 4K a 7K, no el doble, porque las manos son
+las mismas), con acordes de 8 notas como máximo. Las celdas, trinos y jumptrills de 4K y 7K
+están elegidos a mano; para las demás se arman con las mismas ideas (escaleras, saltos, manos
+alternas, rollos y celdas de 4K que recorren una zona de cada mano). En teclados anchos el
+contorno melódico y las manos alternas recorren todo el teclado. En 12K–18K cada mitad es un
+escenario y la vista previa los muestra separados. 1K es una sola columna: solo ritmo.
+
 ### Parámetros en la interfaz
 
 - **Audio**: un archivo que el navegador sepa decodificar (MP3, WAV, FLAC, OGG, M4A…) o un
   enlace de YouTube (con el ayudante). Título, artista y carátula se leen de las etiquetas del
   MP3 (ID3) o FLAC, o del video ("Artista - Tema"); si no hay, del nombre del archivo.
-- **Modos** 4K / 7K y **dificultades** a generar.
+- **Modos** (1K–10K, 12K, 14K, 16K, 18K; se pueden elegir varios) y **dificultades** a generar.
 - **Influencia de cada instrumento** (0–100 %: bombo, caja, platillos, bajo, melodía/voz; con
   preajustes *Equilibrado*, *Batería*, *Melodía / voz*, *Bajo* y *Todo*). Un instrumento en
   0 % no genera notas, ni siquiera de relleno. La vista de capas muestra arriba qué instrumento

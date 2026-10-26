@@ -27,7 +27,7 @@
 
 import { Azar } from "./azar.js";
 import { MELODIA, PERCUSION } from "./capas.js";
-import { perfil as obtenerPerfil } from "./dificultades.js";
+import { dobleEscenario, perfil as obtenerPerfil, TECLAS_VALIDAS } from "./dificultades.js";
 import { bisectIzq, insertarOrdenado, limitar, media, percentil, redondear } from "./dsp.js";
 
 // Importancia por defecto de cada capa (el usuario puede cambiarla, 0..1).
@@ -114,7 +114,9 @@ export class OpcionesGeneracion {
     }
     tramos.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
     this.capasSecciones = tramos;
-    if (this.teclas !== 4 && this.teclas !== 7) throw new Error("Solo se admiten 4K y 7K.");
+    if (!TECLAS_VALIDAS.includes(this.teclas)) {
+      throw new Error(`Teclas no admitidas: ${teclas}. Se puede de 1K a 10K, y 12K, 14K, 16K o 18K.`);
+    }
     this.percusion = limitar(Number(percusion), 0, 1);  // cuánto siguen las notas a la batería
     this.melodia = limitar(Number(melodia), 0, 1);      // cuánto siguen a la melodía y el bajo
     if (this.percusion + this.melodia < 0.05) {
@@ -657,20 +659,93 @@ export function agruparFrases(eventos, periodo, maximo = 16) {
 // Catálogo de patrones (cada patrón: lista de columnas por evento)
 // ---------------------------------------------------------------------------
 
-const CELDAS = {
+// 4K y 7K tienen celdas elegidas a mano; el resto se arma con las mismas ideas
+// (escaleras, saltos, manos alternas, rollos) para cualquier cantidad de columnas.
+const CELDAS_FIJAS = {
   4: [[0, 1, 2, 3], [3, 2, 1, 0], [0, 2, 1, 3], [3, 1, 2, 0], [0, 1, 3, 2], [1, 0, 2, 3],
     [0, 3, 1, 2], [1, 3, 0, 2]],
   7: [[0, 1, 2, 4, 5, 6], [6, 5, 4, 2, 1, 0], [0, 2, 4, 6, 5, 3, 1], [0, 4, 1, 5, 2, 6],
     [2, 1, 0, 4, 5, 6], [0, 6, 1, 5, 2, 4], [1, 2, 4, 5], [0, 3, 6, 4, 2]],
 };
-const CELDAS_TERNARIAS = {
+const CELDAS_TERNARIAS_FIJAS = {
   4: [[0, 1, 2], [3, 2, 1], [0, 2, 3], [3, 1, 0], [0, 1, 3, 2, 3, 1]],
   7: [[0, 1, 2], [6, 5, 4], [0, 2, 4], [6, 4, 2], [1, 2, 3, 5, 4, 3]],
 };
-const JUMPTRILLS = {
+const JUMPTRILLS_FIJOS = {
   4: [[[0, 1], [2, 3]], [[0, 2], [1, 3]], [[0, 3], [1, 2]]],
   7: [[[0, 1], [5, 6]], [[1, 2], [4, 5]], [[0, 2], [4, 6]], [[0, 1, 2], [4, 5, 6]]],
 };
+const TRINOS_FIJOS = {
+  4: [[1, 2], [0, 3], [0, 1], [2, 3], [0, 2], [1, 3]],
+  7: [[2, 4], [1, 5], [0, 6], [1, 2], [4, 5], [2, 5], [3, 4]],
+};
+
+const rango = (desde, hasta) => Array.from({ length: Math.max(0, hasta - desde) }, (_, i) => desde + i);
+const memoriaCatalogo = new Map();
+function catalogo(nombre, k, crear) {
+  const clave = `${nombre}:${k}`;
+  if (!memoriaCatalogo.has(clave)) memoriaCatalogo.set(clave, crear());
+  return memoriaCatalogo.get(clave);
+}
+
+function celdas(k) {
+  if (CELDAS_FIJAS[k]) return CELDAS_FIJAS[k];
+  return catalogo("celdas", k, () => {
+    if (k <= 3) return [rango(0, k), rango(0, k).reverse(), ...(k === 3 ? [[0, 2, 1], [1, 0, 2], [0, 1, 2, 1]] : [])];
+    const todas = rango(0, k);
+    const [izquierda, derecha] = manos(k);
+    const alternas = izquierda.flatMap((c, i) => [c, derecha[i]]);
+    const saltos = [...todas.filter((c) => c % 2 === 0), ...todas.filter((c) => c % 2 === 1)];
+    const rollos = [...izquierda, ...[...derecha].reverse()];
+    const lista = [todas, [...todas].reverse(), alternas, saltos, rollos, [...rollos].reverse()];
+    // En teclados anchos, las celdas de 4K también recorren una zona de cada mano.
+    if (k > 6) {
+      for (const desde of new Set([0, Math.floor((k - 4) / 2), k - 4])) {
+        for (const celda of CELDAS_FIJAS[4].slice(0, 4)) lista.push(celda.map((c) => c + desde));
+      }
+    }
+    return lista;
+  });
+}
+
+function celdasTernarias(k) {
+  if (CELDAS_TERNARIAS_FIJAS[k]) return CELDAS_TERNARIAS_FIJAS[k];
+  return catalogo("ternarias", k, () => {
+    if (k <= 3) return [rango(0, k), rango(0, k).reverse()];
+    const lista = [[0, 1, 2], [k - 1, k - 2, k - 3], [0, 2, 3].map((c) => Math.min(c, k - 1)), [k - 1, k - 3, k - 4]];
+    if (k >= 5) lista.push([0, 2, 4], [k - 1, k - 3, k - 5]);
+    const centro = Math.floor((k - 1) / 2);
+    lista.push([centro - 1, centro, centro + 1, centro + 2, centro + 1, centro].map((c) => limitar(c, 0, k - 1)));
+    return lista;
+  });
+}
+
+function jumptrills(k) {
+  if (JUMPTRILLS_FIJOS[k]) return JUMPTRILLS_FIJOS[k];
+  return catalogo("jumptrills", k, () => {
+    const lista = [];
+    for (let tam = 1; tam <= Math.min(3, Math.floor(k / 2)); tam++) {
+      lista.push([rango(0, tam), rango(k - tam, k)]);                    // extremos
+      if (2 * tam <= k) lista.push([rango(0, tam), rango(tam, 2 * tam)]); // vecinos
+      const medio = Math.floor(k / 2);
+      if (medio - tam >= 0 && medio + tam <= k) lista.push([rango(medio - tam, medio), rango(medio, medio + tam)]);
+    }
+    if (k >= 4) lista.push([[0, 2], [1, 3]], [[k - 4, k - 2], [k - 3, k - 1]]);
+    return lista;
+  });
+}
+
+function trinos(k) {
+  if (TRINOS_FIJOS[k]) return TRINOS_FIJOS[k];
+  return catalogo("trinos", k, () => {
+    if (k === 1) return [[0, 0]];
+    const lista = [];
+    for (let i = 0; i < Math.floor(k / 2); i++) lista.push([i, k - 1 - i]);
+    for (let i = 0; i + 1 < k; i++) lista.push([i, i + 1]);
+    for (let i = 0; i + 2 < k; i++) lista.push([i, i + 2]);
+    return lista;
+  });
+}
 
 function manos(k) {
   const izquierda = [], derecha = [];
@@ -696,21 +771,20 @@ function patronEscalera(n, k, azar) {
 }
 
 function patronTrino(n, k, azar) {
-  const parejas = k === 4
-    ? [[1, 2], [0, 3], [0, 1], [2, 3], [0, 2], [1, 3]]
-    : [[2, 4], [1, 5], [0, 6], [1, 2], [4, 5], [2, 5], [3, 4]];
+  const parejas = trinos(k);
   const [a, b] = parejas[azar.entero(parejas.length)];
   return Array.from({ length: n }, (_, i) => (i % 2 === 0 ? [a] : [b]));
 }
 
 function patronCelda(n, k, azar, ternario = false) {
-  const celdas = (ternario ? CELDAS_TERNARIAS : CELDAS)[k];
-  const celda = celdas[azar.entero(celdas.length)];
+  const lista = ternario ? celdasTernarias(k) : celdas(k);
+  const celda = lista[azar.entero(lista.length)];
   return Array.from({ length: n }, (_, i) => [celda[i % celda.length]]);
 }
 
 function patronJumptrill(n, k, azar, acordeMax) {
-  const opciones = JUMPTRILLS[k].filter((j) => j[0].length <= acordeMax);
+  const opciones = jumptrills(k).filter((j) => j[0].length <= acordeMax);
+  if (!opciones.length) return patronTrino(n, k, azar);
   const [a, b] = opciones[azar.entero(opciones.length)];
   return Array.from({ length: n }, (_, i) => [...(i % 2 === 0 ? a : b)]);
 }
@@ -731,10 +805,20 @@ function patronManos(n, k, azar, eventos) {
   const [izquierda, derecha] = manos(k);
   let lado = azar.entero(2);
   const salida = [];
+  // Con manos de más de 3 columnas (8K en adelante) cada mano se mueve desde su nota
+  // anterior: sube → derecha, baja → izquierda, y recorre toda su zona.
+  const anchas = izquierda.length > 3;
+  const posicion = [azar.entero(izquierda.length), azar.entero(derecha.length)];
   for (let i = 0; i < n; i++) {
     const mano = lado === 0 ? izquierda : derecha;
     let columna;
-    if (i > 0 && eventos[i].altura > eventos[i - 1].altura + 0.5) {
+    if (anchas) {
+      const diferencia = i > 0 ? eventos[i].altura - eventos[i - 1].altura : 0;
+      let paso = diferencia > 0.5 ? 1 : diferencia < -0.5 ? -1 : azar.entero(3) - 1;
+      if (posicion[lado] + paso < 0 || posicion[lado] + paso >= mano.length) paso = -paso;
+      posicion[lado] = limitar(posicion[lado] + paso, 0, mano.length - 1);
+      columna = mano[posicion[lado]];
+    } else if (i > 0 && eventos[i].altura > eventos[i - 1].altura + 0.5) {
       columna = lado === 1 ? mano[mano.length - 1] : mano[Math.min(1, mano.length - 1)];
     } else if (i > 0 && eventos[i].altura < eventos[i - 1].altura - 0.5) {
       columna = lado === 0 ? mano[0] : mano[Math.max(0, mano.length - 2)];
@@ -776,6 +860,12 @@ function patronMelodia(n, k, azar, eventos, jackMin) {
   const largo = largoTramo(0, primera);
   let columna = primera > 0 ? Math.max(0, k - 1 - largo) : Math.min(k - 1, largo);
   if (largo >= k) columna = primera > 0 ? 0 : k - 1;
+  else if (k > 7) {
+    // En teclados anchos el contorno arranca en cualquier columna donde quepa, no
+    // siempre pegado a un borde: así se usa todo el teclado.
+    const libres = k - 1 - largo; // columnas de margen que deja el tramo
+    columna = primera > 0 ? azar.entero(libres + 1) : largo + azar.entero(libres + 1);
+  }
   const salida = [[columna]];
   let base = columna; // columna "propia" de la nota (sin el desvío del trino)
   saltos.forEach((salto, i) => {
@@ -793,7 +883,7 @@ function patronMelodia(n, k, azar, eventos, jackMin) {
     }
     const signo = Math.sign(salto);
     let paso = Math.abs(salto) >= 5 && k > 4 ? 2 : 1;
-    if (Math.abs(salto) >= 7 && k === 4) paso = 2;
+    if (Math.abs(salto) >= 7 && k <= 4) paso = 2;
     let destino = base + signo * paso;
     if (destino < 0 || destino >= k) destino = base + signo;  // el salto grande no cabe: un solo paso
     if (destino < 0 || destino >= k) destino = base - signo;  // tope del teclado: inevitable rebotar
@@ -826,7 +916,7 @@ class Asignador {
     this.holdsActivos = new Map();
     this.memoria = new Map();
     this.frases = [];
-    this.limiteHolds = perfil.nombre === "Easy" && this.k === 4 ? 1 : Math.max(1, Math.floor(this.k / 2));
+    this.limiteHolds = perfil.nombre === "Easy" && this.k <= 4 ? 1 : Math.max(1, Math.floor(this.k / 2));
     this.tiemposEventos = [];
     this.pasoHold = this.a.periodo / (perfil.divisor <= 2 ? 2 : 4);
     this.huecoHold = Math.max(0.06, perfil.jackMin * 0.5); // tras soltar un hold
@@ -855,13 +945,13 @@ class Asignador {
         melodia: 3.0 * confianza * movimiento };
       if (avanzado && intensidad > 0.55 && 2 * dt >= p.jackMin && p.acordeMax >= 2) {
         pesos.jumptrill = p.nombre === "Insane" ? 1.5 : 0.7;
-        if (k === 7) pesos.brackets = 1.0;
+        if (k >= 5) pesos.brackets = 1.0;
       }
     } else if (medio) {
       pesos = { celda: 2.0, melodia: 3.5 * confianza * (0.3 + movimiento), manos: 2.0, escalera: 1.0 };
       if (avanzado && intensidad > 0.55 && p.acordeMax >= 2) {
         pesos.jumptrill = 1.0;
-        if (k === 7) pesos.brackets = 1.2;
+        if (k >= 5) pesos.brackets = 1.2;
         if (p.nombre === "Insane" && dt >= p.jackMin * 1.1) pesos.chordjack = 1.0;
       }
     } else {
@@ -883,6 +973,7 @@ class Asignador {
 
   generarPatron(tipo, frase, azar) {
     const n = frase.length, k = this.k;
+    if (k === 1) return Array.from({ length: n }, () => [0]); // 1K: una sola columna
     const dt = intervaloMinimo(frase) || this.a.periodo;
     const ternario = Math.abs(dt / this.a.periodo - 1 / 3) < 0.03;
     switch (tipo) {
@@ -957,7 +1048,10 @@ class Asignador {
     if (this.totalNotas > 16) {
       costo += Math.max(0, this.uso[c] / this.totalNotas - 1 / this.k) * this.k * 2.0;
     }
-    if (this.k === 7 && c === 3 && (this.p.nombre === "Easy" || this.p.nombre === "Normal")) costo += 0.5;
+    // La columna del medio de un escenario impar va con el pulgar: algo menos en Easy/Normal.
+    const escenario = dobleEscenario(this.k) ? this.k / 2 : this.k;
+    if (escenario % 2 === 1 && escenario >= 5 && c % escenario === (escenario - 1) / 2
+        && (this.p.nombre === "Easy" || this.p.nombre === "Normal")) costo += 0.5;
     return costo + this.azar.uniforme(0, 0.3);
   }
 
@@ -975,7 +1069,7 @@ class Asignador {
     let extra = (p.acordeMax - 1) * Math.min(1.0, (fuerza - umbral) / (1 - umbral + 1e-6) + 0.3);
     extra *= 0.5 + p.probAcorde + 0.4 * intensidad + (seccion && seccion.kiai ? 0.2 : 0);
     let tamano = 1 + Math.max(1, redondear(extra));
-    if (rapido) tamano = Math.min(tamano, this.k === 4 || p.nombre !== "Insane" ? 2 : 3);
+    if (rapido) tamano = Math.min(tamano, this.k <= 4 || p.nombre !== "Insane" ? 2 : 3);
     return Math.min(tamano, p.acordeMax);
   }
 

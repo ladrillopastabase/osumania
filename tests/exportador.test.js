@@ -10,11 +10,12 @@ import { analisisDe } from "./util.js";
 
 const analisis = () => analisisDe("150", () => ({ senal: cancion(150, 30, 0.5) })).analisis;
 
-for (const teclas of [4, 7]) {
+for (const teclas of [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18]) {
   test(`posición x ida y vuelta (${teclas}K)`, () => {
     for (let c = 0; c < teclas; c++) assert.equal(Math.floor((posicionX(c, teclas) * teclas) / 512), c);
   });
 
+  if (![4, 7, 18].includes(teclas)) continue;
   test(`.osu válido (${teclas}K)`, () => {
     const a = analisis();
     const mapa = generarMapa(a, { teclas, dificultad: "Hard", holds: 2 });
